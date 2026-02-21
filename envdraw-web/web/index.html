@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EnvDraw</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <div id="toolbar">
+      <button id="btn-step" title="Step through one evaluation">Step</button>
+      <button id="btn-continue" title="Continue without stopping">Continue</button>
+      <label title="Toggle stepping mode">
+        <input type="checkbox" id="chk-stepping"> Stepping
+      </label>
+      <button id="btn-gc" title="Garbage collect">GC</button>
+      <span id="object-label"></span>
+    </div>
+    <div id="main-area">
+      <div id="trace-panel">
+        <div id="trace-output"></div>
+      </div>
+      <div id="canvas-container">
+        <canvas id="diagram-canvas"></canvas>
+      </div>
+    </div>
+    <div id="repl-area">
+      <span class="prompt">EnvDraw&gt;&nbsp;</span>
+      <input type="text" id="repl-input" autofocus
+             placeholder="Type a Scheme expression…"
+             spellcheck="false" autocomplete="off">
+    </div>
+  </div>
+  <script type="module" src="boot.js"></script>
+</body>
+</html>
