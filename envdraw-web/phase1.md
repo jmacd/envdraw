@@ -153,11 +153,13 @@ wrote `hello.wasm'
 
 ## What Remains
 
-### Phase 2: Complete the Scene Graph & Layout
-- [ ] Port `placement.stk` → placement algorithms for frames and procedures
-- [ ] Port `view-profiles.stk` → size profiles for environment objects  
-- [ ] Port `env-pointers.stk` / `simple-pointer.stk` → pointer/arrow routing
-- [ ] Port `view-pointers.stk` → pointer rendering with bezier curves
+### Phase 2: Complete the Scene Graph & Layout ✅
+- [x] Port `placement.stk` → convex-hull placement algorithm (placement.scm, 333 LOC)
+- [x] Port `view-profiles.stk` → cell profiles and layout constants (profiles.scm, 130 LOC)
+- [x] Port `env-pointers.stk` / `simple-pointer.stk` / `view-pointers.stk` → all pointer routing (pointers.scm, 310 LOC)
+- [x] Integrate into web-observer with hull-based placement replacing grid layout
+- [x] Fix frame-id propagation (observer returns node-id → stored in frame-info)
+- [x] 51 Phase 2 tests passing + 31 evaluator tests still passing
 
 ### Phase 3: Wire Up the Web UI
 - [ ] Compile full evaluator to `envdraw.wasm` with Hoot

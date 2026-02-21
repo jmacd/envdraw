@@ -51,6 +51,15 @@
 ;;; Scene graph (depends on color)
 (load-relative "model/scene-graph.scm")
 
+;;; Profiles — cons-cell size computation (depends on math)
+(load-relative "model/profiles.scm")
+
+;;; Placement — convex-hull positioning (depends on math, stacks)
+(load-relative "model/placement.scm")
+
+;;; Pointer routing — polyline geometry (depends on math, profiles)
+(load-relative "model/pointers.scm")
+
 ;;; Renderer (depends on canvas-ffi, scene-graph)
 (load-relative "render/renderer.scm")
 

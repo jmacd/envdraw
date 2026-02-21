@@ -20,7 +20,7 @@
   (%make-frame-info name id width height insertion-point environment parent-id)
   frame-info?
   (name            frame-info-name)
-  (id              frame-info-id)
+  (id              frame-info-id set-frame-info-id!)
   (width           frame-info-width    set-frame-info-width!)
   (height          frame-info-height   set-frame-info-height!)
   (insertion-point frame-info-inspt    set-frame-info-inspt!)
@@ -221,11 +221,13 @@
                     (frame-info-id (frame-info-of parent-env))))))
       ;; Notify observer to create a frame in the scene graph
       (when *current-observer*
-        ((observer-on-frame-created *current-observer*)
-         name
-         (frame-info-parent-id fi)
-         width
-         height))
+        (let ((obs-id ((observer-on-frame-created *current-observer*)
+                       name
+                       (frame-info-parent-id fi)
+                       width
+                       height)))
+          (when (string? obs-id)
+            (set-frame-info-id! fi obs-id))))
       ;; Increment frame counter unless explicitly named
       (unless (get-keyword ':name args #f)
         (set! *next-environment-number*

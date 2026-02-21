@@ -4,6 +4,10 @@
 ;;; visual output.  When the evaluator calls observer hooks, this
 ;;; creates scene graph nodes, places them, and triggers re-rendering.
 ;;;
+;;; Phase 2 upgrade: uses convex-hull placement (placement.scm),
+;;; proper pointer routing (pointers.scm), and cell profiles
+;;; (profiles.scm) instead of simple grid layout.
+;;;
 ;;; Copyright (C) 2026 Josh MacDonald
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -18,6 +22,9 @@
 
 ;;; Map from proc-id → procedure display node
 (define *proc-nodes* '())
+
+;;; Map from proc-id → enclosing frame-id (for pointer routing)
+(define *proc-frame-map* '())
 
 ;;; Current rendering context and canvas dimensions
 (define *render-ctx* #f)
@@ -44,42 +51,42 @@
     (set! *color-index* (+ 1 *color-index*))
     c))
 
-;;; Layout: simple grid-based placement for frames
-(define *next-frame-x* 20)
-(define *next-frame-y* 30)
-(define *frame-column-width* 0)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;             PLACEMENT STATE (convex hull)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define (place-next-frame! width height)
-  ;; Place frames in columns, stacking vertically
-  (let ((x *next-frame-x*)
-        (y *next-frame-y*))
-    (set! *next-frame-y* (+ y height 30))
-    ;; Track widest frame in current column
-    (when (> width *frame-column-width*)
-      (set! *frame-column-width* width))
-    ;; Start new column if we've gone too far down
-    (when (> *next-frame-y* 700)
-      (set! *next-frame-x* (+ *next-frame-x* *frame-column-width* 40))
-      (set! *next-frame-y* 30)
-      (set! *frame-column-width* 0))
-    (list x y)))
+;;; One-element list holding the metropolis record, or (list #f).
+(define *metro-box* (list #f))
 
-;;; Layout: place procedures near their enclosing frame
-(define *next-proc-x* 20)
+;;; Collect all placed objects for hull regeneration.
+;;; Each entry: (node-id . ((x y) . (w h)))
+(define *placed-rects* '())
 
-(define (place-next-proc! frame-id)
-  ;; Find the frame node and place the procedure to its right
-  (let ((frame-entry (assoc frame-id *frame-nodes*)))
-    (if frame-entry
-        (let* ((frame-node (cdr frame-entry))
-               (fx (node-x frame-node))
-               (fy (node-y frame-node))
-               (fw (node-width frame-node)))
-          (list (+ fx fw 30) fy))
-        ;; Fallback: place sequentially
-        (let ((x *next-proc-x*))
-          (set! *next-proc-x* (+ x 100))
-          (list x 500)))))
+(define (register-placed-rect! node)
+  (set! *placed-rects*
+        (cons (cons (node-id node)
+                    (cons (list (node-x node) (node-y node))
+                          (list (node-width node) (node-height node))))
+              *placed-rects*)))
+
+(define (get-node-center node)
+  (list (+ (node-x node) (* 0.5 (node-width node)))
+        (+ (node-y node) (* 0.5 (node-height node)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;             LAYOUT: PLACE A NODE
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;; Place a new node near `near-node` (or at default position if #f).
+(define (place-node! node near-node)
+  (let* ((dim (list (node-width node) (node-height node)))
+         (near-center (if near-node
+                          (get-node-center near-node)
+                          PLACEMENT_INITIAL_POSITION))
+         (pos (place-widget! *metro-box* near-center dim)))
+    (set-node-x! node (car pos))
+    (set-node-y! node (cadr pos))
+    (register-placed-rect! node)))
 
 ;;; Insertion tracking per frame (y-offset for next binding)
 (define *frame-insertion-points* '())
@@ -125,17 +132,31 @@
 
 (define (make-web-observer scene-root)
   (set! *scene-root* scene-root)
+  (set! *metro-box* (list #f))
+  (set! *placed-rects* '())
+  (set! *frame-nodes* '())
+  (set! *proc-nodes* '())
+  (set! *proc-frame-map* '())
+  (set! *frame-insertion-points* '())
+  (set! *color-index* 0)
   (make-eval-observer
    ;; on-frame-created: (env-name parent-env-id width height) → frame-id
    (lambda (env-name parent-env-id width height)
      (let* ((color (next-color!))
-            (pos (place-next-frame! width height))
             (frame-node (make-frame-display-node
-                         (car pos) (cadr pos)
+                         0 0  ; positioned later by placement
                          width height
                          env-name color))
-            (frame-id (node-id frame-node)))
+            (frame-id (node-id frame-node))
+            ;; Find parent frame node for placement heuristic
+            (parent-node
+             (if parent-env-id
+                 (let ((entry (assoc parent-env-id *frame-nodes*)))
+                   (if entry (cdr entry) #f))
+                 #f)))
        (node-add-child! scene-root frame-node)
+       ;; Place using convex-hull algorithm
+       (place-node! frame-node parent-node)
        ;; Track this frame node
        (set! *frame-nodes* (cons (cons frame-id frame-node) *frame-nodes*))
        (request-render!)
@@ -176,25 +197,36 @@
    ;; on-procedure-created: (lambda-text frame-id) → proc-id
    (lambda (lambda-text frame-id)
      (let* ((color (next-color!))
-            (pos (place-next-proc! frame-id))
             (proc-node (make-procedure-node
-                        (car pos) (cadr pos)
+                        0 0   ; positioned by placement
                         lambda-text color))
-            (proc-id (node-id proc-node)))
+            (proc-id (node-id proc-node))
+            ;; Find enclosing frame for placement
+            (frame-entry (assoc frame-id *frame-nodes*))
+            (near-node (if frame-entry (cdr frame-entry) #f)))
        (node-add-child! scene-root proc-node)
-       ;; Draw pointer from procedure to enclosing frame
-       (let ((frame-entry (assoc frame-id *frame-nodes*)))
-         (when frame-entry
-           (let* ((frame-node (cdr frame-entry))
-                  (fx (node-x frame-node))
-                  (fy (node-y frame-node))
-                  (px (car pos))
-                  (py (cadr pos))
-                  (ptr (make-pointer-line
-                        (+ px 80) (+ py 15)  ; right edge of top oval
-                        fx (+ fy 10))))       ; left edge of frame
-             (node-add-child! scene-root ptr))))
+       ;; Place near the enclosing frame
+       (place-node! proc-node near-node)
+       ;; Draw routed pointer from procedure to enclosing frame
+       (when frame-entry
+         (let* ((frame-node (cdr frame-entry))
+                (fx (node-x frame-node))
+                (fy (node-y frame-node))
+                (fw (node-width frame-node))
+                (fh (node-height frame-node))
+                (px (node-x proc-node))
+                (py (node-y proc-node))
+                (pw (node-width proc-node))
+                (ph (node-height proc-node))
+                ;; Use env pointer routing between the proc and frame
+                (pts (compute-pointer-path
+                      'env
+                      px py pw ph
+                      fx fy fw fh))
+                (ptr (make-line-node pts "black" 1.5 #t)))
+           (node-add-child! scene-root ptr)))
        (set! *proc-nodes* (cons (cons proc-id proc-node) *proc-nodes*))
+       (set! *proc-frame-map* (cons (cons proc-id frame-id) *proc-frame-map*))
        (request-render!)
        proc-id))
 
@@ -208,13 +240,17 @@
                 (cx (node-x child-node))
                 (cy (node-y child-node))
                 (cw (node-width child-node))
+                (ch (node-height child-node))
                 (px (node-x parent-node))
                 (py (node-y parent-node))
                 (pw (node-width parent-node))
                 (ph (node-height parent-node))
-                (ptr (make-pointer-line
-                      (+ cx (/ cw 2)) cy      ; top-center of child
-                      (+ px (/ pw 2)) (+ py ph)))) ; bottom-center of parent
+                ;; Use proper pointer routing between frames
+                (pts (compute-pointer-path
+                      'env
+                      cx cy cw ch
+                      px py pw ph))
+                (ptr (make-line-node pts "#555" 1.5 #t)))
            (node-add-child! *scene-root* ptr)
            (request-render!)))))
 
