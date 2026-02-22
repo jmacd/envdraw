@@ -212,23 +212,26 @@
 ;;;
 ;;; Must come AFTER web-observer (defines user-print, user-display)
 ;;; and BEFORE meta.scm (which references *host-eval*).
+;;;
+;;; NOTE: Split into small quasiquoted lists and joined with append.
+;;; Hoot 0.6.1 crashes at runtime with "index out of bounds" when a
+;;; single quasiquote expression contains ~80+ unquotes.
 
-(define *primitives-table*
-  `(;; Arithmetic
-    (+ . ,+) (- . ,-) (* . ,*) (/ . ,/)
+(define *prims-arith*
+  `((+ . ,+) (- . ,-) (* . ,*) (/ . ,/)
     (quotient . ,quotient) (remainder . ,remainder) (modulo . ,modulo)
     (abs . ,abs) (max . ,max) (min . ,min)
     (expt . ,expt) (sqrt . ,sqrt)
     (floor . ,floor) (ceiling . ,ceiling)
     (round . ,round) (truncate . ,truncate)
     (exact . ,exact) (inexact . ,inexact)
-    (exact->inexact . ,inexact) (inexact->exact . ,exact)
+    (exact->inexact . ,inexact) (inexact->exact . ,exact)))
 
-    ;; Comparison
-    (= . ,=) (< . ,<) (> . ,>) (<= . ,<=) (>= . ,>=)
+(define *prims-cmp*
+  `((= . ,=) (< . ,<) (> . ,>) (<= . ,<=) (>= . ,>=)))
 
-    ;; Type predicates
-    (number? . ,number?) (integer? . ,integer?)
+(define *prims-pred*
+  `((number? . ,number?) (integer? . ,integer?)
     (symbol? . ,symbol?) (string? . ,string?)
     (boolean? . ,boolean?) (char? . ,char?)
     (pair? . ,pair?) (null? . ,null?)
@@ -236,14 +239,12 @@
     (procedure? . ,procedure?)
     (eq? . ,eq?) (eqv? . ,eqv?) (equal? . ,equal?)
     (not . ,not)
-
-    ;; Numeric predicates
     (zero? . ,zero?) (positive? . ,positive?)
     (negative? . ,negative?)
-    (even? . ,even?) (odd? . ,odd?)
+    (even? . ,even?) (odd? . ,odd?)))
 
-    ;; Pairs and lists
-    (cons . ,cons) (car . ,car) (cdr . ,cdr)
+(define *prims-list*
+  `((cons . ,cons) (car . ,car) (cdr . ,cdr)
     (set-car! . ,set-car!) (set-cdr! . ,set-cdr!)
     (list . ,list) (append . ,append)
     (length . ,length) (reverse . ,reverse)
@@ -253,10 +254,10 @@
     (cadr . ,cadr) (caddr . ,caddr)
     (caar . ,caar) (cdar . ,cdar) (cddr . ,cddr)
     (caaar . ,caaar) (caadr . ,caadr) (cadar . ,cadar)
-    (cdaar . ,cdaar) (cdadr . ,cdadr) (cddar . ,cddar)
+    (cdaar . ,cdaar) (cdadr . ,cdadr) (cddar . ,cddar)))
 
-    ;; Strings
-    (string-append . ,string-append)
+(define *prims-str*
+  `((string-append . ,string-append)
     (string-length . ,string-length)
     (string-ref . ,string-ref)
     (substring . ,substring)
@@ -269,39 +270,44 @@
     (string->symbol . ,string->symbol)
     (string->list . ,string->list)
     (list->string . ,list->string)
-    (string . ,string)
+    (string . ,string)))
 
-    ;; Characters
-    (char->integer . ,char->integer)
+(define *prims-char*
+  `((char->integer . ,char->integer)
     (integer->char . ,integer->char)
     (char=? . ,char=?)
-    (char<? . ,char<?)
+    (char<? . ,char<?)))
 
-    ;; Vectors
-    (make-vector . ,make-vector) (vector . ,vector)
+(define *prims-vec*
+  `((make-vector . ,make-vector) (vector . ,vector)
     (vector-ref . ,vector-ref) (vector-set! . ,vector-set!)
     (vector-length . ,vector-length)
     (vector->list . ,vector->list)
-    (list->vector . ,list->vector)
+    (list->vector . ,list->vector)))
 
-    ;; I/O
-    (newline . ,newline)
+(define *prims-io*
+  `((newline . ,newline)
     (read . ,read)
     (write . ,write)
     (display . ,display)
     (user-print . ,user-print)
-    (user-display . ,user-display)
+    (user-display . ,user-display)))
 
-    ;; Higher-order (work with native procedures only)
-    (map . ,map) (for-each . ,for-each)
-    (apply . ,apply)
+(define *prims-ho*
+  `((map . ,map) (for-each . ,for-each)
+    (apply . ,apply)))
 
-    ;; Control
-    (error . ,error)
+(define *prims-ctrl*
+  `((error . ,error)
     (call-with-current-continuation . ,call-with-current-continuation)
     (call/cc . ,call-with-current-continuation)
     (values . ,values)
     (call-with-values . ,call-with-values)))
+
+(define *primitives-table*
+  (append *prims-arith* *prims-cmp* *prims-pred* *prims-list*
+          *prims-str* *prims-char* *prims-vec* *prims-io*
+          *prims-ho* *prims-ctrl*))
 
 (define (*host-eval* var)
   (let ((entry (assq var *primitives-table*)))
@@ -322,30 +328,22 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define (boot!)
-  (console-log "boot: start")
-
   ;; Create scene graph and observer
   (let* ((root (make-group-node 0 0))
-         (dummy1 (console-log "boot: root created"))
          (obs (make-web-observer root))
-         (dummy2 (console-log "boot: observer created"))
          (eval-fn (envdraw-init obs))
-         (dummy3 (console-log "boot: envdraw-init done"))
-         (ctx (get-canvas-context))
-         (dummy4 (console-log "boot: got canvas context")))
+         (ctx (get-canvas-context)))
 
     ;; Set up rendering state
     (set! *render-ctx* ctx)
     (set! *canvas-width* (exact (floor (get-canvas-width))))
     (set! *canvas-height* (exact (floor (get-canvas-height))))
-    (console-log "boot: rendering state set")
 
     ;; Set trace callback to push lines to the DOM trace panel
     (set! *trace-callback*
           (lambda (s) (trace-append s)))
 
     ;; ── Register callbacks for JS ──
-    (console-log "boot: registering eval handler")
 
     ;; Eval: called when user presses Enter in the REPL
     (register-eval-handler
@@ -363,7 +361,6 @@
           (let ((result (eval-fn input-string)))
             (set-result-text result)
             result)))))
-    (console-log "boot: eval handler registered")
 
     ;; Render: called on resize or when JS needs a repaint
     (register-render-handler
@@ -372,7 +369,6 @@
         (set! *canvas-width* (exact (floor (get-canvas-width))))
         (set! *canvas-height* (exact (floor (get-canvas-height))))
         (request-render!))))
-    (console-log "boot: render handler registered")
 
     ;; Step: advance one evaluation step
     (register-step-handler
@@ -388,7 +384,6 @@
     (register-toggle-step-handler
      (procedure->external
       (lambda () (env-toggle-use-step))))
-    (console-log "boot: step/continue/toggle registered")
 
     ;; Resize: update canvas dimensions and re-render
     (register-resize-handler
@@ -398,7 +393,6 @@
         (set! *canvas-width* (exact (floor (get-canvas-width))))
         (set! *canvas-height* (exact (floor (get-canvas-height))))
         (request-render!))))
-    (console-log "boot: resize registered")
 
     ;; Initial render — show the GLOBAL ENVIRONMENT frame
     (request-render!)

@@ -233,25 +233,6 @@ async function boot() {
   try {
     // Load the Hoot-compiled EnvDraw Wasm module
     // Scheme is the global from reflect.js (loaded before this script)
-    // Debug: fetch and inspect the wasm imports before loading
-    const wasmBytes = await fetch("envdraw.wasm?" + Date.now()).then(r => r.arrayBuffer());
-    console.log("DEBUG: wasm size =", wasmBytes.byteLength, "bytes");
-    const wasmMod = await WebAssembly.compile(wasmBytes);
-    const imports = WebAssembly.Module.imports(wasmMod);
-    const importsByModule = {};
-    for (const imp of imports) {
-      if (!importsByModule[imp.module]) importsByModule[imp.module] = [];
-      importsByModule[imp.module].push(imp.name + " (" + imp.kind + ")");
-    }
-    for (const [mod, names] of Object.entries(importsByModule)) {
-      if (mod === "ctx" || mod === "app") {
-        console.log("DEBUG: wasm imports [" + mod + "]:", names);
-      }
-    }
-    // Check what we're providing
-    console.log("DEBUG: JS provides [ctx]:", Object.keys(ctxImports));
-    console.log("DEBUG: JS provides [app]:", Object.keys(appImports));
-
     await Scheme.load_main("envdraw.wasm?" + Date.now(), {
       reflect_wasm_dir: ".",
       user_imports: {

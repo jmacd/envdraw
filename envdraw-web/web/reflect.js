@@ -277,14 +277,7 @@ class Scheme {
             }
         });
         let proc = new Procedure(this, mod.get_export('$load').value);
-        console.log('DEBUG #init_module: calling $load, proc =', proc);
-        try {
-            return proc.call();
-        } catch(e) {
-            console.error('DEBUG #init_module: $load crashed:', e.message);
-            console.error('DEBUG #init_module: mod exports:', Object.keys(mod.instance.exports).slice(0, 30));
-            throw e;
-        }
+        return proc.call();
     }
     static async load_main(path, opts = {}) {
         let mod = await SchemeModule.fetch_and_instantiate(path, opts);
@@ -379,20 +372,12 @@ class Scheme {
 
     call(func, ...args) {
         let api = this.#instance.exports;
-        console.log('DEBUG call: func =', func, 'args.length =', args.length);
-        console.log('DEBUG call: api exports available:', typeof api.make_vector, typeof api.call);
         let argv = api.make_vector(args.length + 1, api.scm_false());
         func = this.#to_scm(func);
         api.vector_set(argv, 0, func);
         for (let [idx, arg] of args.entries())
             api.vector_set(argv, idx + 1, this.#to_scm(arg));
-        console.log('DEBUG call: about to api.call, argv length =', api.vector_length(argv));
-        try {
-            argv = api.call(func, argv);
-        } catch(e) {
-            console.error('DEBUG call: api.call crashed:', e.message);
-            throw e;
-        }
+        argv = api.call(func, argv);
         let results = [];
         for (let idx = 0; idx < api.vector_length(argv); idx++)
             results.push(this.#to_js(api.vector_ref(argv, idx)))
