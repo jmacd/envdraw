@@ -160,12 +160,58 @@
   (ref string) -> none)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;                 INCLUDE SOURCE FILES
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;; NB: Includes MUST come before the primitives table because
+;;; user-print / user-display (defined in web-observer.scm) are
+;;; referenced via unquote in the quasiquoted alist.  Evaluating
+;;; those unquotes before the definitions exist produces an
+;;; uninitialised Wasm table index → "index out of bounds".
+
+;;; Core data structures
+(include "../src/core/stacks.scm")
+
+;;; Model layer
+(include "../src/model/math.scm")
+(include "../src/model/color.scm")
+
+;;; Canvas FFI — already defined above via define-foreign (skip stubs)
+
+;;; Scene graph
+(include "../src/model/scene-graph.scm")
+
+;;; Profiles — cons-cell sizing
+(include "../src/model/profiles.scm")
+
+;;; Placement — convex-hull layout
+(include "../src/model/placement.scm")
+
+;;; Pointer routing
+(include "../src/model/pointers.scm")
+
+;;; Renderer
+(include "../src/render/renderer.scm")
+
+;;; Observer interface
+(include "../src/core/eval-observer.scm")
+
+;;; Web observer
+(include "../src/ui/web-observer.scm")
+
+;;; Environment manipulation
+(include "../src/core/environments.scm")
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;                 PRIMITIVES TABLE
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;;; Replaces (eval var (interaction-environment)) for the Wasm build.
 ;;; The meta-evaluator calls (*host-eval* var) to resolve primitive
 ;;; procedures like +, cons, car, etc.
+;;;
+;;; Must come AFTER web-observer (defines user-print, user-display)
+;;; and BEFORE meta.scm (which references *host-eval*).
 
 (define *primitives-table*
   `(;; Arithmetic
@@ -263,47 +309,13 @@
         (cdr entry)
         (error "Unbound variable (no host binding)" var))))
 
-(console-log "envdraw: primitives and host-eval defined")
+(console-log "envdraw: all includes loaded, primitives ready")
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;                 INCLUDE SOURCE FILES
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-;;; Core data structures
-(include "../src/core/stacks.scm")
-
-;;; Model layer
-(include "../src/model/math.scm")
-(include "../src/model/color.scm")
-
-;;; Canvas FFI — already defined above via define-foreign (skip stubs)
-
-;;; Scene graph
-(include "../src/model/scene-graph.scm")
-
-;;; Profiles — cons-cell sizing
-(include "../src/model/profiles.scm")
-
-;;; Placement — convex-hull layout
-(include "../src/model/placement.scm")
-
-;;; Pointer routing
-(include "../src/model/pointers.scm")
-
-;;; Renderer
-(include "../src/render/renderer.scm")
-
-;;; Observer interface
-(include "../src/core/eval-observer.scm")
-
-;;; Web observer
-(include "../src/ui/web-observer.scm")
-
-;;; Environment manipulation
-(include "../src/core/environments.scm")
-
-;;; Metacircular evaluator
+;;; Metacircular evaluator — must come AFTER *host-eval* is defined
+;;; since lookup-variable-value calls (*host-eval* var)
 (include "../src/core/meta.scm")
+
+(console-log "envdraw: meta.scm loaded")
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;                 INITIALIZATION
