@@ -1,18 +1,16 @@
-// boot.js — JavaScript bootstrap for EnvDraw
+// boot.js — JavaScript bootstrap for EnvDraw (Phase 4)
 // Loads the Hoot-compiled Wasm module and wires up all UI interactions.
 //
-// The Scheme side registers callback functions via the "app" FFI module.
-// This file provides:
-//   1. All FFI imports (canvas, DOM, app callbacks)
-//   2. Event listener wiring (REPL, toolbar, resize)
-//   3. Canvas resize management
+// Provides:
+//   1. FFI imports (canvas with pan/zoom transforms, DOM, app callbacks)
+//   2. Event wiring (REPL, toolbar, resize, keyboard shortcuts)
+//   3. Canvas pan/zoom with mouse drag + scroll wheel
+//   4. Resizable trace panel via drag handle
+//   5. Collapsible trace sidebar
 
 "use strict";
 
-// ─── Registered Scheme Callbacks ───────────────────────────────────
-// These are populated by the Scheme side during boot! via
-// register*Handler FFI calls.  Each receives a JS-callable function
-// wrapper around a Scheme procedure (via procedure->external).
+// ─── State ─────────────────────────────────────────────────────────
 
 const callbacks = {
   eval: null,
@@ -23,9 +21,16 @@ const callbacks = {
   resize: null,
 };
 
+const view = {
+  zoom: 1.0,
+  panX: 0,
+  panY: 0,
+  isPanning: false,
+  lastMouse: { x: 0, y: 0 },
+  diagramExists: false,
+};
+
 // ─── Canvas / Context FFI ──────────────────────────────────────────
-// Module "ctx" — Canvas2D drawing operations.
-// Every function takes the context as its first argument.
 
 const ctxImports = {
   setFillStyle(ctx, style)    { ctx.fillStyle = style; },
@@ -59,10 +64,8 @@ const ctxImports = {
 };
 
 // ─── App FFI ───────────────────────────────────────────────────────
-// Module "app" — bidirectional communication between Scheme and JS.
 
 const appImports = {
-  // Scheme registers callbacks for JS to invoke on user events
   registerEvalHandler(fn)       { callbacks.eval = fn; },
   registerRenderHandler(fn)     { callbacks.render = fn; },
   registerStepHandler(fn)       { callbacks.step = fn; },
@@ -70,14 +73,13 @@ const appImports = {
   registerToggleStepHandler(fn) { callbacks.toggleStep = fn; },
   registerResizeHandler(fn)     { callbacks.resize = fn; },
 
-  // Scheme calls these to update the DOM
   traceAppend(text) {
     const traceOutput = document.getElementById("trace-output");
     const line = document.createElement("div");
     line.className = "trace-line";
 
-    // Classify for color coding
-    if (text.includes("EVAL in"))   line.classList.add("eval-line");
+    if (text.startsWith("EnvDraw>")) line.classList.add("input-line");
+    else if (text.includes("EVAL in"))   line.classList.add("eval-line");
     else if (text.includes("RETURNING")) line.classList.add("return-line");
     else if (text.includes("Error") || text.includes("***")) line.classList.add("error-line");
     else line.classList.add("info-line");
@@ -85,37 +87,88 @@ const appImports = {
     line.textContent = text;
     traceOutput.appendChild(line);
     traceOutput.scrollTop = traceOutput.scrollHeight;
+
+    // Show trace panel if it's collapsed and there's an error
+    if (text.includes("Error") || text.includes("***")) {
+      showTracePanel();
+    }
   },
 
   setResultText(text) {
     const traceOutput = document.getElementById("trace-output");
     const line = document.createElement("div");
     line.className = "trace-line return-line";
-    line.textContent = "=> " + text;
+    line.textContent = "⇒ " + text;
     traceOutput.appendChild(line);
     traceOutput.scrollTop = traceOutput.scrollHeight;
+
+    // First result means diagram exists — hide empty state
+    hideEmptyState();
   },
 
   getCanvasContext() {
     const canvas = document.getElementById("diagram-canvas");
-    return canvas ? canvas.getContext("2d") : null;
+    if (!canvas) return null;
+    const ctx = canvas.getContext("2d");
+    // Apply pan/zoom transform so Scheme rendering is offset
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.translate(view.panX, view.panY);
+    ctx.scale(view.zoom, view.zoom);
+    return ctx;
   },
 
   getCanvasWidth() {
     const canvas = document.getElementById("diagram-canvas");
-    return canvas ? canvas.width : 800;
+    const dpr = window.devicePixelRatio || 1;
+    return canvas ? canvas.width / dpr / view.zoom : 800;
   },
 
   getCanvasHeight() {
     const canvas = document.getElementById("diagram-canvas");
-    return canvas ? canvas.height : 600;
+    const dpr = window.devicePixelRatio || 1;
+    return canvas ? canvas.height / dpr / view.zoom : 600;
   },
 
   consoleLog(msg)   { console.log("[EnvDraw]", msg); },
   consoleError(msg) { console.error("[EnvDraw]", msg); },
 };
 
-// ─── Canvas resize helper ──────────────────────────────────────────
+// ─── UI Helpers ────────────────────────────────────────────────────
+
+function setStatus(text, level) {
+  const el = document.getElementById("status-indicator");
+  el.textContent = text;
+  el.className = "status-" + (level || "ready");
+}
+
+function hideEmptyState() {
+  const el = document.getElementById("empty-state");
+  if (el && !view.diagramExists) {
+    el.classList.add("hidden");
+    view.diagramExists = true;
+  }
+}
+
+function showTracePanel() {
+  const panel = document.getElementById("trace-panel");
+  const handle = document.getElementById("resize-handle");
+  panel.classList.remove("collapsed");
+  handle.classList.remove("hidden");
+}
+
+function updateZoomLabel() {
+  const label = document.getElementById("btn-zoom-reset");
+  label.textContent = Math.round(view.zoom * 100) + "%";
+}
+
+function requestRender() {
+  if (callbacks.render) {
+    try { callbacks.render(); } catch (e) { console.error("render:", e); }
+  }
+}
+
+// ─── Canvas Resize ─────────────────────────────────────────────────
 
 function setupCanvasResize() {
   const canvas = document.getElementById("diagram-canvas");
@@ -126,17 +179,142 @@ function setupCanvasResize() {
     const rect = container.getBoundingClientRect();
     canvas.width  = rect.width  * dpr;
     canvas.height = rect.height * dpr;
-    const ctx = canvas.getContext("2d");
-    ctx.scale(dpr, dpr);
-    // Tell Scheme side to update its dimensions and re-render
     if (callbacks.resize) {
-      try { callbacks.resize(); } catch (e) { console.error("resize callback:", e); }
+      try { callbacks.resize(); } catch (e) { console.error("resize:", e); }
     }
   }
 
-  window.addEventListener("resize", resize);
+  const ro = new ResizeObserver(() => resize());
+  ro.observe(container);
   resize();
   return canvas;
+}
+
+// ─── Pan & Zoom ────────────────────────────────────────────────────
+
+function setupPanZoom() {
+  const canvas = document.getElementById("diagram-canvas");
+
+  // --- Mouse drag for panning ---
+  canvas.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    view.isPanning = true;
+    view.lastMouse = { x: e.clientX, y: e.clientY };
+    canvas.classList.add("panning");
+    e.preventDefault();
+  });
+
+  window.addEventListener("mousemove", (e) => {
+    if (!view.isPanning) return;
+    const dx = e.clientX - view.lastMouse.x;
+    const dy = e.clientY - view.lastMouse.y;
+    view.panX += dx;
+    view.panY += dy;
+    view.lastMouse = { x: e.clientX, y: e.clientY };
+    requestRender();
+  });
+
+  window.addEventListener("mouseup", () => {
+    if (!view.isPanning) return;
+    view.isPanning = false;
+    canvas.classList.remove("panning");
+  });
+
+  // --- Scroll wheel for zoom ---
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    // Zoom factor
+    const delta = -e.deltaY * 0.001;
+    const factor = Math.exp(delta);
+    const newZoom = Math.min(5, Math.max(0.1, view.zoom * factor));
+    const ratio = newZoom / view.zoom;
+
+    // Zoom centered on mouse position
+    view.panX = mx - ratio * (mx - view.panX);
+    view.panY = my - ratio * (my - view.panY);
+    view.zoom = newZoom;
+
+    updateZoomLabel();
+    requestRender();
+  }, { passive: false });
+
+  // --- Zoom buttons ---
+  document.getElementById("btn-zoom-in").addEventListener("click", () => {
+    zoomBy(1.25);
+  });
+
+  document.getElementById("btn-zoom-out").addEventListener("click", () => {
+    zoomBy(0.8);
+  });
+
+  document.getElementById("btn-zoom-reset").addEventListener("click", () => {
+    view.zoom = 1.0;
+    view.panX = 0;
+    view.panY = 0;
+    updateZoomLabel();
+    requestRender();
+  });
+
+  document.getElementById("btn-fit").addEventListener("click", () => {
+    // Reset to origin — a smarter version would compute bounding box
+    view.zoom = 1.0;
+    view.panX = 20;
+    view.panY = 20;
+    updateZoomLabel();
+    requestRender();
+  });
+}
+
+function zoomBy(factor) {
+  const container = document.getElementById("canvas-container");
+  const rect = container.getBoundingClientRect();
+  const cx = rect.width / 2;
+  const cy = rect.height / 2;
+
+  const newZoom = Math.min(5, Math.max(0.1, view.zoom * factor));
+  const ratio = newZoom / view.zoom;
+  view.panX = cx - ratio * (cx - view.panX);
+  view.panY = cy - ratio * (cy - view.panY);
+  view.zoom = newZoom;
+
+  updateZoomLabel();
+  requestRender();
+}
+
+// ─── Resizable Trace Panel ─────────────────────────────────────────
+
+function setupResizeHandle() {
+  const handle = document.getElementById("resize-handle");
+  const panel = document.getElementById("trace-panel");
+  let isResizing = false;
+
+  handle.addEventListener("mousedown", (e) => {
+    isResizing = true;
+    e.preventDefault();
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  });
+
+  window.addEventListener("mousemove", (e) => {
+    if (!isResizing) return;
+    const mainArea = document.getElementById("main-area");
+    const rect = mainArea.getBoundingClientRect();
+    const newWidth = rect.right - e.clientX;
+    if (newWidth >= 180 && newWidth <= 600) {
+      panel.style.width = newWidth + "px";
+    }
+  });
+
+  window.addEventListener("mouseup", () => {
+    if (!isResizing) return;
+    isResizing = false;
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  });
 }
 
 // ─── Wire UI Events ────────────────────────────────────────────────
@@ -147,92 +325,159 @@ function wireEvents() {
   const btnContinue = document.getElementById("btn-continue");
   const chkStepping = document.getElementById("chk-stepping");
   const btnGC = document.getElementById("btn-gc");
+  const btnClear = document.getElementById("btn-clear");
+  const btnToggleTrace = document.getElementById("btn-toggle-trace");
+  const btnClearTrace = document.getElementById("btn-clear-trace");
+  const historyEl = document.getElementById("history-pos");
 
-  // Command history
   const history = [];
   let historyIndex = -1;
 
-  // REPL input: Enter to evaluate
+  // ── REPL ──
   replInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
       const text = replInput.value.trim();
       if (!text) return;
 
-      // Add to history
       history.unshift(text);
       historyIndex = -1;
+      historyEl.textContent = "";
 
-      // Show input in trace
       appImports.traceAppend("EnvDraw> " + text);
       replInput.value = "";
 
-      // Call Scheme evaluator
+      hideEmptyState();
+      setStatus("Evaluating…", "busy");
+
       if (callbacks.eval) {
         try {
           callbacks.eval(text);
+          setStatus("Ready", "ready");
         } catch (err) {
           console.error("eval error:", err);
-          appImports.traceAppend("*** JS Error: " + err.message);
+          appImports.traceAppend("*** Error: " + err.message);
+          setStatus("Error", "error");
         }
       }
     } else if (e.key === "ArrowUp") {
-      // History navigation
+      e.preventDefault();
       if (historyIndex < history.length - 1) {
         historyIndex++;
         replInput.value = history[historyIndex];
-        e.preventDefault();
+        historyEl.textContent = (historyIndex + 1) + "/" + history.length;
       }
     } else if (e.key === "ArrowDown") {
+      e.preventDefault();
       if (historyIndex > 0) {
         historyIndex--;
         replInput.value = history[historyIndex];
+        historyEl.textContent = (historyIndex + 1) + "/" + history.length;
       } else if (historyIndex === 0) {
         historyIndex = -1;
         replInput.value = "";
+        historyEl.textContent = "";
       }
-      e.preventDefault();
     }
   });
 
-  // Toolbar: Step button
+  // ── Toolbar ──
   btnStep.addEventListener("click", () => {
     if (callbacks.step) {
       try { callbacks.step(); } catch (e) { console.error("step:", e); }
     }
   });
 
-  // Toolbar: Continue button
   btnContinue.addEventListener("click", () => {
     if (callbacks.continue_) {
       try { callbacks.continue_(); } catch (e) { console.error("continue:", e); }
     }
   });
 
-  // Toolbar: Stepping checkbox
   chkStepping.addEventListener("change", () => {
     if (callbacks.toggleStep) {
       try { callbacks.toggleStep(); } catch (e) { console.error("toggleStep:", e); }
     }
   });
 
-  // Toolbar: GC button (placeholder)
   btnGC.addEventListener("click", () => {
     appImports.traceAppend("GC: not yet implemented");
   });
 
-  // Focus REPL on load
+  btnClear.addEventListener("click", () => {
+    document.getElementById("trace-output").innerHTML = "";
+    // Reset view
+    view.zoom = 1.0;
+    view.panX = 0;
+    view.panY = 0;
+    view.diagramExists = false;
+    updateZoomLabel();
+    document.getElementById("empty-state").classList.remove("hidden");
+    requestRender();
+  });
+
+  // ── Trace panel toggle ──
+  btnToggleTrace.addEventListener("click", () => {
+    const panel = document.getElementById("trace-panel");
+    const handle = document.getElementById("resize-handle");
+    panel.classList.toggle("collapsed");
+    handle.classList.toggle("hidden");
+  });
+
+  btnClearTrace.addEventListener("click", () => {
+    document.getElementById("trace-output").innerHTML = "";
+  });
+
+  // ── Empty state examples — click to insert ──
+  document.querySelectorAll(".empty-examples code").forEach((el) => {
+    el.addEventListener("click", () => {
+      replInput.value = el.textContent;
+      replInput.focus();
+    });
+  });
+
+  // ── Keyboard shortcuts ──
+  document.addEventListener("keydown", (e) => {
+    // Don't capture when typing in the REPL
+    if (document.activeElement === replInput && !e.ctrlKey && !e.metaKey) return;
+
+    if (e.key === "F10" || (e.ctrlKey && e.key === "'")) {
+      e.preventDefault();
+      btnStep.click();
+    } else if (e.key === "F5") {
+      e.preventDefault();
+      btnContinue.click();
+    } else if (e.key === "t" && !e.ctrlKey && !e.metaKey && document.activeElement !== replInput) {
+      e.preventDefault();
+      btnToggleTrace.click();
+    } else if (e.key === "0" && !e.ctrlKey && !e.metaKey && document.activeElement !== replInput) {
+      e.preventDefault();
+      view.zoom = 1.0; view.panX = 0; view.panY = 0;
+      updateZoomLabel(); requestRender();
+    } else if (e.key === "=" && !e.ctrlKey && !e.metaKey && document.activeElement !== replInput) {
+      e.preventDefault();
+      zoomBy(1.25);
+    } else if (e.key === "-" && !e.ctrlKey && !e.metaKey && document.activeElement !== replInput) {
+      e.preventDefault();
+      zoomBy(0.8);
+    } else if (e.key === "/" && document.activeElement !== replInput) {
+      e.preventDefault();
+      replInput.focus();
+    }
+  });
+
   replInput.focus();
 }
 
 // ─── Boot ──────────────────────────────────────────────────────────
 
 async function boot() {
+  setStatus("Loading…", "busy");
   setupCanvasResize();
+  setupPanZoom();
+  setupResizeHandle();
 
   try {
-    // Load the Hoot-compiled EnvDraw Wasm module
-    // Scheme is the global from reflect.js (loaded before this script)
     await Scheme.load_main("envdraw.wasm?" + Date.now(), {
       reflect_wasm_dir: ".",
       user_imports: {
@@ -242,19 +487,22 @@ async function boot() {
     });
 
     console.log("EnvDraw: Wasm module loaded successfully.");
-
-    // Wire up DOM event handlers (after Scheme callbacks are registered)
+    setStatus("Ready", "ready");
     wireEvents();
 
   } catch (e) {
     if (e instanceof WebAssembly.CompileError) {
-      document.getElementById("object-label").textContent =
-        "Error: Browser does not support Wasm GC / tail calls";
+      setStatus("Browser unsupported", "error");
+      document.getElementById("empty-state").querySelector(".empty-title").textContent =
+        "Browser not supported";
+      document.getElementById("empty-state").querySelector(".empty-hint").textContent =
+        "EnvDraw requires Wasm GC and tail calls (Firefox 120+ or Chrome 119+)";
+    } else {
+      setStatus("Load error", "error");
     }
     console.error("EnvDraw boot error:", e);
-
-    // Still wire events for error feedback
     wireEvents();
+
     const traceOutput = document.getElementById("trace-output");
     const line = document.createElement("div");
     line.className = "trace-line error-line";
