@@ -72,6 +72,10 @@
 ;;; Environment manipulation (depends on eval-observer)
 (load-relative "core/environments.scm")
 
+;;; Host eval — Guile's native eval for resolving primitives
+(define (*host-eval* var)
+  (eval var (interaction-environment)))
+
 ;;; Metacircular evaluator (depends on everything above)
 (load-relative "core/meta.scm")
 

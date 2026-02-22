@@ -148,11 +148,14 @@
 ;;;          USER-FACING PROCEDURES (bound in meta-environment)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define (user-display object obs)
-  ((observer-on-write-trace obs) (viewed-rep object)))
+(define (user-display object)
+  (when *meta-observer*
+    ((observer-on-write-trace *meta-observer*) (viewed-rep object))))
 
-(define (user-print object obs)
-  ((observer-on-write-trace obs) (viewed-rep object)))
+(define (user-print object)
+  (when *meta-observer*
+    ((observer-on-write-trace *meta-observer*) (viewed-rep object))
+    ((observer-on-write-trace *meta-observer*) "\n")))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;                    GLOBAL STATE
@@ -407,7 +410,7 @@
         (binding-value b)
         (list 'external-binding
               (if (null? name) var (car name))
-              (eval var (interaction-environment))))))
+              (*host-eval* var)))))
 
 (define external-value caddr)
 (define external-symbol cadr)
@@ -601,7 +604,7 @@
 (define continuation-indent-level caddr)
 (define continuation-continuation cadddr)
 (define (continuation-id x) (car (cddddr x)))
-(define (cddddr x) (cdr (cdddr x)))
+;;; cddddr: provided by (scheme cxr) in R7RS / built-in in Guile
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;                         PREDICATES

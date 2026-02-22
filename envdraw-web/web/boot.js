@@ -1,17 +1,31 @@
 // boot.js — JavaScript bootstrap for EnvDraw
-// Provides FFI imports for the Hoot-compiled Wasm module
-// and initializes the application.
+// Loads the Hoot-compiled Wasm module and wires up all UI interactions.
+//
+// The Scheme side registers callback functions via the "app" FFI module.
+// This file provides:
+//   1. All FFI imports (canvas, DOM, app callbacks)
+//   2. Event listener wiring (REPL, toolbar, resize)
+//   3. Canvas resize management
 
-// ─── Canvas / Rendering FFI ────────────────────────────────────────
+"use strict";
 
-const canvasImports = {
-  getCanvas() {
-    return document.getElementById("diagram-canvas");
-  },
-  getContext(canvas, type) {
-    return canvas.getContext(type);
-  },
+// ─── Registered Scheme Callbacks ───────────────────────────────────
+// These are populated by the Scheme side during boot! via
+// register*Handler FFI calls.  Each receives a JS-callable function
+// wrapper around a Scheme procedure (via procedure->external).
+
+const callbacks = {
+  eval: null,
+  render: null,
+  step: null,
+  continue_: null,
+  toggleStep: null,
+  resize: null,
 };
+
+// ─── Canvas / Context FFI ──────────────────────────────────────────
+// Module "ctx" — Canvas2D drawing operations.
+// Every function takes the context as its first argument.
 
 const ctxImports = {
   setFillStyle(ctx, style)    { ctx.fillStyle = style; },
@@ -44,60 +58,61 @@ const ctxImports = {
   clearLineDash(ctx)          { ctx.setLineDash([]); },
 };
 
-// ─── DOM FFI ───────────────────────────────────────────────────────
+// ─── App FFI ───────────────────────────────────────────────────────
+// Module "app" — bidirectional communication between Scheme and JS.
 
-const documentImports = {
-  getElementById(id)        { return document.getElementById(id); },
-  createElement(tag)        { return document.createElement(tag); },
-  createTextNode(text)      { return document.createTextNode(text); },
-};
+const appImports = {
+  // Scheme registers callbacks for JS to invoke on user events
+  registerEvalHandler(fn)       { callbacks.eval = fn; },
+  registerRenderHandler(fn)     { callbacks.render = fn; },
+  registerStepHandler(fn)       { callbacks.step = fn; },
+  registerContinueHandler(fn)   { callbacks.continue_ = fn; },
+  registerToggleStepHandler(fn) { callbacks.toggleStep = fn; },
+  registerResizeHandler(fn)     { callbacks.resize = fn; },
 
-const elementImports = {
-  setInnerText(el, text)    { el.innerText = text; },
-  setInnerHTML(el, html)    { el.innerHTML = html; },
-  getInnerText(el)          { return el.innerText; },
-  getValue(el)              { return el.value; },
-  setValue(el, v)            { el.value = v; },
-  appendChild(el, child)    { return el.appendChild(child); },
-  removeChild(el, child)    { el.removeChild(child); },
-  setAttribute(el, k, v)    { el.setAttribute(k, v); },
-  getAttribute(el, k)       { return el.getAttribute(k); },
-  addClass(el, cls)         { el.classList.add(cls); },
-  removeClass(el, cls)      { el.classList.remove(cls); },
-  scrollToBottom(el)        { el.scrollTop = el.scrollHeight; },
-  getBoundingClientRect(el) { return el.getBoundingClientRect(); },
-  getWidth(el)              { return el.getBoundingClientRect().width; },
-  getHeight(el)             { return el.getBoundingClientRect().height; },
-  addEventListener(el, evt, fn) { el.addEventListener(evt, fn); },
-  removeEventListener(el, evt, fn) { el.removeEventListener(evt, fn); },
-  focus(el)                 { el.focus(); },
-};
+  // Scheme calls these to update the DOM
+  traceAppend(text) {
+    const traceOutput = document.getElementById("trace-output");
+    const line = document.createElement("div");
+    line.className = "trace-line";
 
-// ─── Event FFI ─────────────────────────────────────────────────────
+    // Classify for color coding
+    if (text.includes("EVAL in"))   line.classList.add("eval-line");
+    else if (text.includes("RETURNING")) line.classList.add("return-line");
+    else if (text.includes("Error") || text.includes("***")) line.classList.add("error-line");
+    else line.classList.add("info-line");
 
-const eventImports = {
-  preventDefault(e)   { e.preventDefault(); },
-  getKey(e)           { return e.key; },
-  getKeyCode(e)       { return e.keyCode; },
-  getClientX(e)       { return e.clientX; },
-  getClientY(e)       { return e.clientY; },
-  getOffsetX(e)       { return e.offsetX; },
-  getOffsetY(e)       { return e.offsetY; },
-  getButton(e)        { return e.button; },
-  getShiftKey(e)      { return e.shiftKey; },
-  getDeltaY(e)        { return e.deltaY; },
-  getTarget(e)        { return e.target; },
-  getChecked(e)       { return e.target.checked; },
-};
+    line.textContent = text;
+    traceOutput.appendChild(line);
+    traceOutput.scrollTop = traceOutput.scrollHeight;
+  },
 
-// ─── Timer / RAF FFI ───────────────────────────────────────────────
+  setResultText(text) {
+    const traceOutput = document.getElementById("trace-output");
+    const line = document.createElement("div");
+    line.className = "trace-line return-line";
+    line.textContent = "=> " + text;
+    traceOutput.appendChild(line);
+    traceOutput.scrollTop = traceOutput.scrollHeight;
+  },
 
-const timerImports = {
-  requestAnimationFrame(fn) { return requestAnimationFrame(fn); },
-  setTimeout(fn, ms)        { return setTimeout(fn, ms); },
-  consoleLog(msg)           { console.log(msg); },
-  consoleError(msg)         { console.error(msg); },
-  now()                     { return performance.now(); },
+  getCanvasContext() {
+    const canvas = document.getElementById("diagram-canvas");
+    return canvas ? canvas.getContext("2d") : null;
+  },
+
+  getCanvasWidth() {
+    const canvas = document.getElementById("diagram-canvas");
+    return canvas ? canvas.width : 800;
+  },
+
+  getCanvasHeight() {
+    const canvas = document.getElementById("diagram-canvas");
+    return canvas ? canvas.height : 600;
+  },
+
+  consoleLog(msg)   { console.log("[EnvDraw]", msg); },
+  consoleError(msg) { console.error("[EnvDraw]", msg); },
 };
 
 // ─── Canvas resize helper ──────────────────────────────────────────
@@ -113,7 +128,10 @@ function setupCanvasResize() {
     canvas.height = rect.height * dpr;
     const ctx = canvas.getContext("2d");
     ctx.scale(dpr, dpr);
-    // TODO: trigger re-render from Scheme side
+    // Tell Scheme side to update its dimensions and re-render
+    if (callbacks.resize) {
+      try { callbacks.resize(); } catch (e) { console.error("resize callback:", e); }
+    }
   }
 
   window.addEventListener("resize", resize);
@@ -121,25 +139,128 @@ function setupCanvasResize() {
   return canvas;
 }
 
+// ─── Wire UI Events ────────────────────────────────────────────────
+
+function wireEvents() {
+  const replInput = document.getElementById("repl-input");
+  const btnStep = document.getElementById("btn-step");
+  const btnContinue = document.getElementById("btn-continue");
+  const chkStepping = document.getElementById("chk-stepping");
+  const btnGC = document.getElementById("btn-gc");
+
+  // Command history
+  const history = [];
+  let historyIndex = -1;
+
+  // REPL input: Enter to evaluate
+  replInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const text = replInput.value.trim();
+      if (!text) return;
+
+      // Add to history
+      history.unshift(text);
+      historyIndex = -1;
+
+      // Show input in trace
+      appImports.traceAppend("EnvDraw> " + text);
+      replInput.value = "";
+
+      // Call Scheme evaluator
+      if (callbacks.eval) {
+        try {
+          callbacks.eval(text);
+        } catch (err) {
+          console.error("eval error:", err);
+          appImports.traceAppend("*** JS Error: " + err.message);
+        }
+      }
+    } else if (e.key === "ArrowUp") {
+      // History navigation
+      if (historyIndex < history.length - 1) {
+        historyIndex++;
+        replInput.value = history[historyIndex];
+        e.preventDefault();
+      }
+    } else if (e.key === "ArrowDown") {
+      if (historyIndex > 0) {
+        historyIndex--;
+        replInput.value = history[historyIndex];
+      } else if (historyIndex === 0) {
+        historyIndex = -1;
+        replInput.value = "";
+      }
+      e.preventDefault();
+    }
+  });
+
+  // Toolbar: Step button
+  btnStep.addEventListener("click", () => {
+    if (callbacks.step) {
+      try { callbacks.step(); } catch (e) { console.error("step:", e); }
+    }
+  });
+
+  // Toolbar: Continue button
+  btnContinue.addEventListener("click", () => {
+    if (callbacks.continue_) {
+      try { callbacks.continue_(); } catch (e) { console.error("continue:", e); }
+    }
+  });
+
+  // Toolbar: Stepping checkbox
+  chkStepping.addEventListener("change", () => {
+    if (callbacks.toggleStep) {
+      try { callbacks.toggleStep(); } catch (e) { console.error("toggleStep:", e); }
+    }
+  });
+
+  // Toolbar: GC button (placeholder)
+  btnGC.addEventListener("click", () => {
+    appImports.traceAppend("GC: not yet implemented");
+  });
+
+  // Focus REPL on load
+  replInput.focus();
+}
+
 // ─── Boot ──────────────────────────────────────────────────────────
 
 async function boot() {
   setupCanvasResize();
 
-  // For now, just log that we're ready.
-  // Once the Hoot Wasm module is built, we'll load it here:
-  //
-  //   import { Scheme } from "./reflect.js";
-  //   const mod = await Scheme.load_main("envdraw.wasm", {
-  //     canvas: canvasImports,
-  //     ctx: ctxImports,
-  //     document: documentImports,
-  //     element: elementImports,
-  //     event: eventImports,
-  //     timer: timerImports,
-  //   });
-  //
-  console.log("EnvDraw boot: DOM ready, canvas sized, awaiting Wasm module.");
+  try {
+    // Load the Hoot-compiled EnvDraw Wasm module
+    // Scheme is the global from reflect.js (loaded before this script)
+    await Scheme.load_main("envdraw.wasm", {
+      reflect_wasm_dir: ".",
+      user_imports: {
+        ctx: ctxImports,
+        app: appImports,
+      },
+    });
+
+    console.log("EnvDraw: Wasm module loaded successfully.");
+
+    // Wire up DOM event handlers (after Scheme callbacks are registered)
+    wireEvents();
+
+  } catch (e) {
+    if (e instanceof WebAssembly.CompileError) {
+      document.getElementById("object-label").textContent =
+        "Error: Browser does not support Wasm GC / tail calls";
+    }
+    console.error("EnvDraw boot error:", e);
+
+    // Still wire events for error feedback
+    wireEvents();
+    const traceOutput = document.getElementById("trace-output");
+    const line = document.createElement("div");
+    line.className = "trace-line error-line";
+    line.textContent = "*** Failed to load envdraw.wasm: " + e.message;
+    traceOutput.appendChild(line);
+  }
 }
 
-boot();
+window.addEventListener("load", boot);
