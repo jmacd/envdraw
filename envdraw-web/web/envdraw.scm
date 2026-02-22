@@ -137,6 +137,15 @@
 (define-foreign register-resize-handler "app" "registerResizeHandler"
   (ref null extern) -> none)
 
+(define-foreign register-mouse-down-handler "app" "registerMouseDownHandler"
+  (ref null extern) -> none)
+
+(define-foreign register-mouse-move-handler "app" "registerMouseMoveHandler"
+  (ref null extern) -> none)
+
+(define-foreign register-mouse-up-handler "app" "registerMouseUpHandler"
+  (ref null extern) -> none)
+
 ;;; Output functions — Scheme calls JS to update DOM
 (define-foreign trace-append "app" "traceAppend"
   (ref string) -> none)
@@ -334,7 +343,9 @@
          (eval-fn (envdraw-init obs))
          (ctx (get-canvas-context)))
 
-    ;; Set up rendering state
+    ;; Set up rendering state — override the thunk so each
+    ;; render gets a fresh context with current pan/zoom transforms.
+    (set! *get-fresh-context* (lambda () (get-canvas-context)))
     (set! *render-ctx* ctx)
     (set! *canvas-width* (exact (floor (get-canvas-width))))
     (set! *canvas-height* (exact (floor (get-canvas-height))))
@@ -393,6 +404,22 @@
         (set! *canvas-width* (exact (floor (get-canvas-width))))
         (set! *canvas-height* (exact (floor (get-canvas-height))))
         (request-render!))))
+
+    ;; Mouse interaction: hit-test and drag scene-graph nodes
+    (register-mouse-down-handler
+     (procedure->external
+      (lambda (x y)
+        (handle-mouse-down! x y))))
+
+    (register-mouse-move-handler
+     (procedure->external
+      (lambda (x y)
+        (handle-mouse-move! x y))))
+
+    (register-mouse-up-handler
+     (procedure->external
+      (lambda (x y)
+        (handle-mouse-up! x y))))
 
     ;; Initial render — show the GLOBAL ENVIRONMENT frame
     (request-render!)

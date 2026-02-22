@@ -21,12 +21,9 @@
 
 (define (render-scene ctx root canvas-width canvas-height
                       camera-x camera-y zoom)
-  (canvas-clear-rect! ctx 0 0 canvas-width canvas-height)
-  (canvas-save! ctx)
-  (canvas-scale! ctx zoom zoom)
-  (canvas-translate! ctx (- camera-x) (- camera-y))
-  (render-node ctx root 0 0)
-  (canvas-restore! ctx))
+  ;; The JS side clears the canvas and sets up DPR + pan/zoom transforms
+  ;; via getCanvasContext(), so we just render the scene graph here.
+  (render-node ctx root 0 0))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;                    RENDER NODE

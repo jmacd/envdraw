@@ -86,6 +86,12 @@
   (ref null extern) -> none)
 (define-foreign register-resize-handler "app" "registerResizeHandler"
   (ref null extern) -> none)
+(define-foreign register-mouse-down-handler "app" "registerMouseDownHandler"
+  (ref null extern) -> none)
+(define-foreign register-mouse-move-handler "app" "registerMouseMoveHandler"
+  (ref null extern) -> none)
+(define-foreign register-mouse-up-handler "app" "registerMouseUpHandler"
+  (ref null extern) -> none)
 (define-foreign trace-append "app" "traceAppend"
   (ref string) -> none)
 (define-foreign set-result-text "app" "setResultText"

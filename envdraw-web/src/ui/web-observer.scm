@@ -31,10 +31,12 @@
 (define *canvas-width* 800)
 (define *canvas-height* 600)
 
-;;; Camera state
-(define *camera-x* 0)
-(define *camera-y* 0)
-(define *camera-zoom* 1.0)
+;;; Thunk to obtain a fresh canvas context for each render.
+;;; In native/test mode, returns the cached *render-ctx*.
+;;; In Wasm mode, boot! overrides this to call the FFI
+;;; get-canvas-context which clears the canvas and applies
+;;; DPR + pan/zoom transforms.
+(define *get-fresh-context* (lambda () *render-ctx*))
 
 ;;; Render pending flag (coalesce multiple updates)
 (define *render-pending?* #f)
@@ -120,11 +122,16 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define (request-render!)
-  ;; Immediate render for now (in browser, use requestAnimationFrame)
-  (when (and *render-ctx* *scene-root*)
-    (render-scene *render-ctx* *scene-root*
-                  *canvas-width* *canvas-height*
-                  *camera-x* *camera-y* *camera-zoom*)))
+  ;; Get a fresh context each render — in the browser,
+  ;; *get-fresh-context* calls getCanvasContext() which clears
+  ;; the canvas and applies DPR + pan/zoom transforms.
+  (when *scene-root*
+    (let ((ctx (*get-fresh-context*)))
+      (when ctx
+        (set! *render-ctx* ctx)
+        (render-scene ctx *scene-root*
+                      *canvas-width* *canvas-height*
+                      0 0 1.0)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;                  MAKE WEB OBSERVER
@@ -298,3 +305,60 @@
    ;; on-request-render: () → void
    (lambda ()
      (request-render!))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;             DRAG-AND-DROP (node dragging)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;; State for the current drag operation
+(define *drag-node* #f)       ; the node being dragged
+(define *drag-offset-x* 0)    ; mouse offset from node origin
+(define *drag-offset-y* 0)
+
+(define (handle-mouse-down! wx wy)
+  ;; Hit-test the scene graph to find the deepest clickable node.
+  ;; Walk up to find a draggable container (frame group or proc group).
+  (when *scene-root*
+    (let ((hit (hit-test *scene-root* wx wy)))
+      (when hit
+        (let ((target (find-draggable-ancestor hit)))
+          (when target
+            (set! *drag-node* target)
+            (set! *drag-offset-x* (- wx (node-absolute-x target)))
+            (set! *drag-offset-y* (- wy (node-absolute-y target)))))))))
+
+(define (handle-mouse-move! wx wy)
+  (when *drag-node*
+    (let ((new-x (- wx *drag-offset-x*))
+          (new-y (- wy *drag-offset-y*)))
+      ;; If node has a parent, convert to relative coords
+      (if (node-parent *drag-node*)
+          (let ((px (node-absolute-x (node-parent *drag-node*)))
+                (py (node-absolute-y (node-parent *drag-node*))))
+            (set-node-x! *drag-node* (- new-x px))
+            (set-node-y! *drag-node* (- new-y py)))
+          (begin
+            (set-node-x! *drag-node* new-x)
+            (set-node-y! *drag-node* new-y)))
+      (request-render!))))
+
+(define (handle-mouse-up! wx wy)
+  (when *drag-node*
+    ;; TODO: update pointer routes for moved node
+    (set! *drag-node* #f)))
+
+;;; Walk up the scene graph to find the nearest draggable group —
+;;; i.e., a group node that is a direct child of the root (a frame
+;;; or procedure top-level group).
+(define (find-draggable-ancestor node)
+  (cond ((not node) #f)
+        ((not (node-parent node)) #f)  ; root itself is not draggable
+        ;; Direct child of root → this is a top-level draggable group
+        ((and (node-parent node)
+              (node-parent (node-parent node))
+              (not (node-parent (node-parent (node-parent node)))))
+         node)
+        ;; A direct child of root (whose parent has no parent)
+        ((not (node-parent (node-parent node)))
+         node)
+        (else (find-draggable-ancestor (node-parent node)))))

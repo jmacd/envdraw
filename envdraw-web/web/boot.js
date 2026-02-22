@@ -19,6 +19,9 @@ const callbacks = {
   continue_: null,
   toggleStep: null,
   resize: null,
+  mouseDown: null,
+  mouseMove: null,
+  mouseUp: null,
 };
 
 const view = {
@@ -26,7 +29,10 @@ const view = {
   panX: 0,
   panY: 0,
   isPanning: false,
+  isDragging: false,
+  mouseStarted: false,
   lastMouse: { x: 0, y: 0 },
+  startMouse: { x: 0, y: 0 },
   diagramExists: false,
 };
 
@@ -72,6 +78,9 @@ const appImports = {
   registerContinueHandler(fn)   { callbacks.continue_ = fn; },
   registerToggleStepHandler(fn) { callbacks.toggleStep = fn; },
   registerResizeHandler(fn)     { callbacks.resize = fn; },
+  registerMouseDownHandler(fn)  { callbacks.mouseDown = fn; },
+  registerMouseMoveHandler(fn)  { callbacks.mouseMove = fn; },
+  registerMouseUpHandler(fn)    { callbacks.mouseUp = fn; },
 
   traceAppend(text) {
     const traceOutput = document.getElementById("trace-output");
@@ -110,8 +119,11 @@ const appImports = {
     const canvas = document.getElementById("diagram-canvas");
     if (!canvas) return null;
     const ctx = canvas.getContext("2d");
-    // Apply pan/zoom transform so Scheme rendering is offset
     const dpr = window.devicePixelRatio || 1;
+    // Reset transform and clear the entire physical canvas
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // Set up rendering transform: DPR, then pan, then zoom
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.translate(view.panX, view.panY);
     ctx.scale(view.zoom, view.zoom);
@@ -192,31 +204,101 @@ function setupCanvasResize() {
 
 // ─── Pan & Zoom ────────────────────────────────────────────────────
 
+/** Convert a client-space mouse position to scene coordinates */
+function clientToScene(clientX, clientY, canvas) {
+  const rect = canvas.getBoundingClientRect();
+  const cssX = clientX - rect.left;
+  const cssY = clientY - rect.top;
+  // Remove pan, then remove zoom
+  return {
+    x: (cssX - view.panX) / view.zoom,
+    y: (cssY - view.panY) / view.zoom,
+  };
+}
+
 function setupPanZoom() {
   const canvas = document.getElementById("diagram-canvas");
 
-  // --- Mouse drag for panning ---
+  // --- Mouse drag: pan OR node drag ---
   canvas.addEventListener("mousedown", (e) => {
     if (e.button !== 0) return;
-    view.isPanning = true;
-    view.lastMouse = { x: e.clientX, y: e.clientY };
-    canvas.classList.add("panning");
     e.preventDefault();
+
+    const scene = clientToScene(e.clientX, e.clientY, canvas);
+
+    // Ask Scheme if something is under the cursor
+    let isDraggingNode = false;
+    if (callbacks.mouseDown) {
+      try {
+        callbacks.mouseDown(scene.x, scene.y);
+        // If Scheme set a drag node, we're in node-drag mode.
+        // We'll detect this by tracking if mouseMove gets consumed.
+        isDraggingNode = true;
+      } catch (err) {
+        console.error("mouseDown:", err);
+      }
+    }
+
+    // Start tracking — we decide pan vs drag on first move
+    view.isDragging = isDraggingNode;
+    view.isPanning = false;
+    view.mouseStarted = true;
+    view.lastMouse = { x: e.clientX, y: e.clientY };
+    view.startMouse = { x: e.clientX, y: e.clientY };
   });
 
   window.addEventListener("mousemove", (e) => {
-    if (!view.isPanning) return;
+    if (!view.mouseStarted) return;
     const dx = e.clientX - view.lastMouse.x;
     const dy = e.clientY - view.lastMouse.y;
-    view.panX += dx;
-    view.panY += dy;
+
+    if (view.isDragging && callbacks.mouseMove) {
+      // Node drag mode — pass scene coordinates to Scheme
+      const canvas = document.getElementById("diagram-canvas");
+      const scene = clientToScene(e.clientX, e.clientY, canvas);
+      try {
+        callbacks.mouseMove(scene.x, scene.y);
+      } catch (err) {
+        console.error("mouseMove:", err);
+      }
+      canvas.classList.add("panning");
+    } else {
+      // Pan mode — after small threshold to avoid accidental pans on click
+      const totalDx = e.clientX - view.startMouse.x;
+      const totalDy = e.clientY - view.startMouse.y;
+      if (!view.isPanning && (totalDx * totalDx + totalDy * totalDy) > 9) {
+        view.isPanning = true;
+        view.isDragging = false;
+        // Tell Scheme to cancel any drag
+        if (callbacks.mouseUp) {
+          try { callbacks.mouseUp(0, 0); } catch (_) {}
+        }
+      }
+      if (view.isPanning) {
+        view.panX += dx;
+        view.panY += dy;
+        const canvas = document.getElementById("diagram-canvas");
+        canvas.classList.add("panning");
+        requestRender();
+      }
+    }
     view.lastMouse = { x: e.clientX, y: e.clientY };
-    requestRender();
   });
 
-  window.addEventListener("mouseup", () => {
-    if (!view.isPanning) return;
+  window.addEventListener("mouseup", (e) => {
+    if (!view.mouseStarted) return;
+    view.mouseStarted = false;
+
+    if (view.isDragging && callbacks.mouseUp) {
+      const canvas = document.getElementById("diagram-canvas");
+      const scene = clientToScene(e.clientX, e.clientY, canvas);
+      try { callbacks.mouseUp(scene.x, scene.y); } catch (err) {
+        console.error("mouseUp:", err);
+      }
+    }
     view.isPanning = false;
+    view.isDragging = false;
+    const canvas = document.getElementById("diagram-canvas");
     canvas.classList.remove("panning");
   });
 

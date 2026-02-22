@@ -1,0 +1,20 @@
+{
+  "name": "envdraw-web",
+  "version": "1.0.0",
+  "main": "index.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "node test/browser-test.mjs",
+    "test:headed": "node test/browser-test.mjs --headed",
+    "test:debug": "node test/browser-test.mjs --debug"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "puppeteer": "^24.37.5"
+  }
+}
