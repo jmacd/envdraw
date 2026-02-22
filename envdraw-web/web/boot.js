@@ -233,7 +233,7 @@ async function boot() {
   try {
     // Load the Hoot-compiled EnvDraw Wasm module
     // Scheme is the global from reflect.js (loaded before this script)
-    await Scheme.load_main("envdraw.wasm", {
+    await Scheme.load_main("envdraw.wasm?" + Date.now(), {
       reflect_wasm_dir: ".",
       user_imports: {
         ctx: ctxImports,

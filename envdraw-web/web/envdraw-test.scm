@@ -73,6 +73,34 @@
 
 (console-log "phase 1: FFI bindings OK")
 
+;;; Additional app FFI bindings (same as envdraw.scm)
+(define-foreign register-eval-handler "app" "registerEvalHandler"
+  (ref null extern) -> none)
+(define-foreign register-render-handler "app" "registerRenderHandler"
+  (ref null extern) -> none)
+(define-foreign register-step-handler "app" "registerStepHandler"
+  (ref null extern) -> none)
+(define-foreign register-continue-handler "app" "registerContinueHandler"
+  (ref null extern) -> none)
+(define-foreign register-toggle-step-handler "app" "registerToggleStepHandler"
+  (ref null extern) -> none)
+(define-foreign register-resize-handler "app" "registerResizeHandler"
+  (ref null extern) -> none)
+(define-foreign trace-append "app" "traceAppend"
+  (ref string) -> none)
+(define-foreign set-result-text "app" "setResultText"
+  (ref string) -> none)
+(define-foreign get-canvas-context "app" "getCanvasContext"
+  -> (ref null extern))
+(define-foreign get-canvas-width "app" "getCanvasWidth"
+  -> f64)
+(define-foreign get-canvas-height "app" "getCanvasHeight"
+  -> f64)
+(define-foreign console-error "app" "consoleError"
+  (ref string) -> none)
+
+(console-log "phase 1b: all app FFI OK")
+
 ;;; Include model files one by one
 (include "../src/core/stacks.scm")
 (console-log "phase 2: stacks OK")
@@ -107,8 +135,8 @@
 (include "../src/core/environments.scm")
 (console-log "phase 12: environments OK")
 
-;;; Primitives table
-(define *primitives-table*
+;;; Primitives table — split into groups for debugging
+(define *prims-arith*
   `((+ . ,+) (- . ,-) (* . ,*) (/ . ,/)
     (quotient . ,quotient) (remainder . ,remainder) (modulo . ,modulo)
     (abs . ,abs) (max . ,max) (min . ,min)
@@ -116,9 +144,15 @@
     (floor . ,floor) (ceiling . ,ceiling)
     (round . ,round) (truncate . ,truncate)
     (exact . ,exact) (inexact . ,inexact)
-    (exact->inexact . ,inexact) (inexact->exact . ,exact)
-    (= . ,=) (< . ,<) (> . ,>) (<= . ,<=) (>= . ,>=)
-    (number? . ,number?) (integer? . ,integer?)
+    (exact->inexact . ,inexact) (inexact->exact . ,exact)))
+(console-log "prims: arith OK")
+
+(define *prims-cmp*
+  `((= . ,=) (< . ,<) (> . ,>) (<= . ,<=) (>= . ,>=)))
+(console-log "prims: cmp OK")
+
+(define *prims-pred*
+  `((number? . ,number?) (integer? . ,integer?)
     (symbol? . ,symbol?) (string? . ,string?)
     (boolean? . ,boolean?) (char? . ,char?)
     (pair? . ,pair?) (null? . ,null?)
@@ -128,8 +162,11 @@
     (not . ,not)
     (zero? . ,zero?) (positive? . ,positive?)
     (negative? . ,negative?)
-    (even? . ,even?) (odd? . ,odd?)
-    (cons . ,cons) (car . ,car) (cdr . ,cdr)
+    (even? . ,even?) (odd? . ,odd?)))
+(console-log "prims: pred OK")
+
+(define *prims-list*
+  `((cons . ,cons) (car . ,car) (cdr . ,cdr)
     (set-car! . ,set-car!) (set-cdr! . ,set-cdr!)
     (list . ,list) (append . ,append)
     (length . ,length) (reverse . ,reverse)
@@ -139,8 +176,11 @@
     (cadr . ,cadr) (caddr . ,caddr)
     (caar . ,caar) (cdar . ,cdar) (cddr . ,cddr)
     (caaar . ,caaar) (caadr . ,caadr) (cadar . ,cadar)
-    (cdaar . ,cdaar) (cdadr . ,cdadr) (cddar . ,cddar)
-    (string-append . ,string-append)
+    (cdaar . ,cdaar) (cdadr . ,cdadr) (cddar . ,cddar)))
+(console-log "prims: list OK")
+
+(define *prims-str*
+  `((string-append . ,string-append)
     (string-length . ,string-length)
     (string-ref . ,string-ref)
     (substring . ,substring)
@@ -153,27 +193,56 @@
     (string->symbol . ,string->symbol)
     (string->list . ,string->list)
     (list->string . ,list->string)
-    (string . ,string)
-    (char->integer . ,char->integer)
+    (string . ,string)))
+(console-log "prims: str OK")
+
+(define *prims-char*
+  `((char->integer . ,char->integer)
     (integer->char . ,integer->char)
     (char=? . ,char=?)
-    (char<? . ,char<?)
-    (make-vector . ,make-vector) (vector . ,vector)
+    (char<? . ,char<?)))
+(console-log "prims: char OK")
+
+(define *prims-vec*
+  `((make-vector . ,make-vector) (vector . ,vector)
     (vector-ref . ,vector-ref) (vector-set! . ,vector-set!)
     (vector-length . ,vector-length)
     (vector->list . ,vector->list)
-    (list->vector . ,list->vector)
-    (newline . ,newline)
+    (list->vector . ,list->vector)))
+(console-log "prims: vec OK")
+
+(define *prims-io*
+  `((newline . ,newline)
     (read . ,read)
     (write . ,write)
     (display . ,display)
-    (map . ,map) (for-each . ,for-each)
-    (apply . ,apply)
-    (error . ,error)
-    (call-with-current-continuation . ,call-with-current-continuation)
-    (call/cc . ,call-with-current-continuation)
-    (values . ,values)
+    (user-print . ,user-print)
+    (user-display . ,user-display)))
+(console-log "prims: io OK")
+
+(define *prims-ho*
+  `((map . ,map) (for-each . ,for-each)
+    (apply . ,apply)))
+(console-log "prims: ho OK")
+
+(define *prims-ctrl*
+  `((error . ,error)))
+(console-log "prims: ctrl-error OK")
+
+(define *prims-callcc*
+  `((call-with-current-continuation . ,call-with-current-continuation)
+    (call/cc . ,call-with-current-continuation)))
+(console-log "prims: ctrl-callcc OK")
+
+(define *prims-values*
+  `((values . ,values)
     (call-with-values . ,call-with-values)))
+(console-log "prims: ctrl-values OK")
+
+(define *primitives-table*
+  (append *prims-arith* *prims-cmp* *prims-pred* *prims-list*
+          *prims-str* *prims-char* *prims-vec* *prims-io*
+          *prims-ho* *prims-ctrl* *prims-callcc* *prims-values*))
 
 (define (*host-eval* var)
   (let ((entry (assq var *primitives-table*)))
@@ -185,5 +254,43 @@
 
 (include "../src/core/meta.scm")
 (console-log "phase 14: meta OK — all includes loaded!")
+
+;;; Test boot!
+(console-log "phase 15: about to define boot!")
+
+(define (test-boot!)
+  (console-log "boot: start")
+  (let* ((root (make-group-node 0 0)))
+    (console-log "boot: root created")
+    (let* ((obs (make-web-observer root)))
+      (console-log "boot: observer created")
+      (let* ((eval-fn (envdraw-init obs)))
+        (console-log "boot: envdraw-init done")
+        (let* ((ctx (get-canvas-context)))
+          (console-log "boot: got canvas context")
+          (set! *render-ctx* ctx)
+          (set! *canvas-width* 800)
+          (set! *canvas-height* 600)
+          (console-log "boot: render state set")
+          
+          ;; Test procedure->external
+          (register-eval-handler
+           (procedure->external
+            (lambda (input-string)
+              (console-log "eval called")
+              "ok")))
+          (console-log "boot: eval handler registered")
+          
+          (register-render-handler
+           (procedure->external
+            (lambda ()
+              (console-log "render called"))))
+          (console-log "boot: render handler registered")
+          
+          (console-log "boot: ALL DONE"))))))
+
+(console-log "phase 16: boot! defined")
+
+(test-boot!)
 
 (console-log "EnvDraw incremental test: ALL PHASES PASSED")

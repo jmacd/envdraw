@@ -238,11 +238,13 @@
     (vector->list . ,vector->list)
     (list->vector . ,list->vector)
 
-    ;; I/O — user-display/user-print are set up by setup-environment
+    ;; I/O
     (newline . ,newline)
     (read . ,read)
     (write . ,write)
     (display . ,display)
+    (user-print . ,user-print)
+    (user-display . ,user-display)
 
     ;; Higher-order (work with native procedures only)
     (map . ,map) (for-each . ,for-each)
@@ -253,16 +255,15 @@
     (call-with-current-continuation . ,call-with-current-continuation)
     (call/cc . ,call-with-current-continuation)
     (values . ,values)
-    (call-with-values . ,call-with-values)
-
-    ;; Boolean
-    (#t . ,#t) (#f . ,#f)))
+    (call-with-values . ,call-with-values)))
 
 (define (*host-eval* var)
   (let ((entry (assq var *primitives-table*)))
     (if entry
         (cdr entry)
         (error "Unbound variable (no host binding)" var))))
+
+(console-log "envdraw: primitives and host-eval defined")
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;                 INCLUDE SOURCE FILES
@@ -309,24 +310,30 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define (boot!)
-  (console-log "EnvDraw: initializing...")
+  (console-log "boot: start")
 
   ;; Create scene graph and observer
   (let* ((root (make-group-node 0 0))
+         (dummy1 (console-log "boot: root created"))
          (obs (make-web-observer root))
+         (dummy2 (console-log "boot: observer created"))
          (eval-fn (envdraw-init obs))
-         (ctx (get-canvas-context)))
+         (dummy3 (console-log "boot: envdraw-init done"))
+         (ctx (get-canvas-context))
+         (dummy4 (console-log "boot: got canvas context")))
 
     ;; Set up rendering state
     (set! *render-ctx* ctx)
     (set! *canvas-width* (exact (floor (get-canvas-width))))
     (set! *canvas-height* (exact (floor (get-canvas-height))))
+    (console-log "boot: rendering state set")
 
     ;; Set trace callback to push lines to the DOM trace panel
     (set! *trace-callback*
           (lambda (s) (trace-append s)))
 
     ;; ── Register callbacks for JS ──
+    (console-log "boot: registering eval handler")
 
     ;; Eval: called when user presses Enter in the REPL
     (register-eval-handler
@@ -344,6 +351,7 @@
           (let ((result (eval-fn input-string)))
             (set-result-text result)
             result)))))
+    (console-log "boot: eval handler registered")
 
     ;; Render: called on resize or when JS needs a repaint
     (register-render-handler
@@ -352,6 +360,7 @@
         (set! *canvas-width* (exact (floor (get-canvas-width))))
         (set! *canvas-height* (exact (floor (get-canvas-height))))
         (request-render!))))
+    (console-log "boot: render handler registered")
 
     ;; Step: advance one evaluation step
     (register-step-handler
@@ -367,6 +376,7 @@
     (register-toggle-step-handler
      (procedure->external
       (lambda () (env-toggle-use-step))))
+    (console-log "boot: step/continue/toggle registered")
 
     ;; Resize: update canvas dimensions and re-render
     (register-resize-handler
@@ -376,6 +386,7 @@
         (set! *canvas-width* (exact (floor (get-canvas-width))))
         (set! *canvas-height* (exact (floor (get-canvas-height))))
         (request-render!))))
+    (console-log "boot: resize registered")
 
     ;; Initial render — show the GLOBAL ENVIRONMENT frame
     (request-render!)
