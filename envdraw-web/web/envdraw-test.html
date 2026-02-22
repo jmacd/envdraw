@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head><title>EnvDraw minimal test</title></head>
+<body>
+<p id="status">Loading...</p>
+<script src="reflect.js"></script>
+<script>
+window.addEventListener("load", async () => {
+  try {
+    await Scheme.load_main("envdraw-test.wasm", {
+      reflect_wasm_dir: ".",
+      user_imports: {
+        ctx: {
+          setFillStyle(){}, setStrokeStyle(){}, setLineWidth(){},
+          fillRect(){}, strokeRect(){}, clearRect(){},
+          beginPath(){}, closePath(){}, moveTo(){}, lineTo(){},
+          arc(){}, ellipse(){}, stroke(){}, fill(){},
+          fillText(){}, setFont(){}, setTextAlign(){}, setTextBaseline(){},
+          measureTextWidth(){ return 50; }, save(){}, restore(){},
+          translate(){}, scale(){}, setGlobalAlpha(){},
+          setLineDash(){}, clearLineDash(){}
+        },
+        app: {
+          consoleLog(msg) { 
+            console.log("[EnvDraw]", msg);
+            document.getElementById("status").textContent = msg;
+          }
+        }
+      }
+    });
+    console.log("Minimal test: SUCCESS");
+  } catch(e) {
+    console.error("Minimal test error:", e);
+    document.getElementById("status").textContent = "ERROR: " + e.message;
+  }
+});
+</script>
+</body>
+</html>
