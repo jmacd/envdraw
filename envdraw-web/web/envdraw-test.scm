@@ -70,6 +70,8 @@
   (ref null extern) f64 f64 -> none)
 (define-foreign canvas-clear-line-dash! "ctx" "clearLineDash"
   (ref null extern) -> none)
+(define-foreign canvas-round-rect! "ctx" "roundRect"
+  (ref null extern) f64 f64 f64 f64 f64 -> none)
 
 (console-log "phase 1: FFI bindings OK")
 
@@ -91,6 +93,9 @@
 (define-foreign register-mouse-move-handler "app" "registerMouseMoveHandler"
   (ref null extern) -> none)
 (define-foreign register-mouse-up-handler "app" "registerMouseUpHandler"
+  (ref null extern) -> none)
+
+(define-foreign register-gc-handler "app" "registerGCHandler"
   (ref null extern) -> none)
 (define-foreign trace-append "app" "traceAppend"
   (ref string) -> none)

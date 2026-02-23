@@ -67,6 +67,7 @@ const ctxImports = {
   setGlobalAlpha(ctx, a)      { ctx.globalAlpha = a; },
   setLineDash(ctx, seg1, seg2){ ctx.setLineDash([seg1, seg2]); },
   clearLineDash(ctx)          { ctx.setLineDash([]); },
+  roundRect(ctx, x, y, w, h, r){ ctx.beginPath(); ctx.roundRect(x, y, w, h, r); },
 };
 
 // ─── App FFI ───────────────────────────────────────────────────────
@@ -81,6 +82,7 @@ const appImports = {
   registerMouseDownHandler(fn)  { callbacks.mouseDown = fn; },
   registerMouseMoveHandler(fn)  { callbacks.mouseMove = fn; },
   registerMouseUpHandler(fn)    { callbacks.mouseUp = fn; },
+  registerGCHandler(fn)          { callbacks.gc = fn; },
 
   traceAppend(text) {
     const traceOutput = document.getElementById("trace-output");
@@ -226,20 +228,20 @@ function setupPanZoom() {
 
     const scene = clientToScene(e.clientX, e.clientY, canvas);
 
-    // Ask Scheme if something is under the cursor
+    // Ask Scheme if something is under the cursor.
+    // handle-mouse-down! returns #t (hit) or #f (miss).
     let isDraggingNode = false;
     if (callbacks.mouseDown) {
       try {
-        callbacks.mouseDown(scene.x, scene.y);
-        // If Scheme set a drag node, we're in node-drag mode.
-        // We'll detect this by tracking if mouseMove gets consumed.
-        isDraggingNode = true;
+        const result = callbacks.mouseDown(scene.x, scene.y);
+        // Hoot returns Scheme booleans — #t is truthy, #f is false
+        isDraggingNode = !!result;
       } catch (err) {
         console.error("mouseDown:", err);
       }
     }
 
-    // Start tracking — we decide pan vs drag on first move
+    // Start tracking — drag if hit, else pan on first move
     view.isDragging = isDraggingNode;
     view.isPanning = false;
     view.mouseStarted = true;
@@ -261,7 +263,7 @@ function setupPanZoom() {
       } catch (err) {
         console.error("mouseMove:", err);
       }
-      canvas.classList.add("panning");
+      canvas.classList.add("dragging");
     } else {
       // Pan mode — after small threshold to avoid accidental pans on click
       const totalDx = e.clientX - view.startMouse.x;
@@ -300,6 +302,7 @@ function setupPanZoom() {
     view.isDragging = false;
     const canvas = document.getElementById("diagram-canvas");
     canvas.classList.remove("panning");
+    canvas.classList.remove("dragging");
   });
 
   // --- Scroll wheel for zoom ---
@@ -483,7 +486,9 @@ function wireEvents() {
   });
 
   btnGC.addEventListener("click", () => {
-    appImports.traceAppend("GC: not yet implemented");
+    if (callbacks.gc) {
+      try { callbacks.gc(); } catch (e) { console.error("gc:", e); }
+    }
   });
 
   btnClear.addEventListener("click", () => {

@@ -248,11 +248,15 @@ header#toolbar {
   display: block;
   width: 100%;
   height: 100%;
-  cursor: grab;
+  cursor: default;
 }
 
 #diagram-canvas.panning {
   cursor: grabbing;
+}
+
+#diagram-canvas.dragging {
+  cursor: move;
 }
 
 /* Zoom controls */

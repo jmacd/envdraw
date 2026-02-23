@@ -92,6 +92,11 @@
 ;;; It is used by environment operations that need to notify the UI.
 (define *current-observer* #f)
 
+;;; *extract-proc-id* — callback to get the scene-graph node id
+;;; from a compound procedure value.  Set by meta.scm after the
+;;; procedure-info record type is defined.  Returns #f for non-procs.
+(define *extract-proc-id* (lambda (val) #f))
+
 ;;; *next-environment-number* — counter for naming new environments
 (define *next-environment-number* 1)
 
@@ -111,9 +116,13 @@
        (lambda (binding)
          (let* ((var (binding-variable binding))
                 (val (binding-value binding))
-                (vtype (classify-value val)))
+                (vtype (classify-value val))
+                ;; For procedures, pass the proc-id so the observer
+                ;; can draw a binding→procedure arrow.
+                (vrep (let ((pid (*extract-proc-id* val)))
+                        (if pid pid (viewed-rep val)))))
            ((observer-on-binding-placed *current-observer*)
-            (frame-info-id fi) var (viewed-rep val) vtype)))
+            (frame-info-id fi) var vrep vtype)))
        (first-frame env))
       ;; Create environment pointer to parent
       (unless (null? base-env)
@@ -140,11 +149,12 @@
         (let ((binding (make-binding var val (frame-info-of env))))
           (set-first-frame! env (adjoin-binding binding (first-frame env)))
           (when (and (null? place?) *current-observer*)
-            ((observer-on-binding-placed *current-observer*)
-             (frame-info-id (frame-info-of env))
-             var
-             (viewed-rep val)
-             (classify-value val)))))))
+            (let ((pid (*extract-proc-id* val)))
+              ((observer-on-binding-placed *current-observer*)
+               (frame-info-id (frame-info-of env))
+               var
+               (if pid pid (viewed-rep val))
+               (classify-value val))))))))
 
 (define (set-binding-value! binding value)
   (let ((old-val (binding-value binding)))

@@ -221,36 +221,65 @@
 (define (make-procedure-node x y lambda-text fill-color)
   (let* ((fill (color->hex fill-color))
          (stroke (color->hex (complement-color fill-color)))
+         (dark-stroke (color->hex (darken-color fill-color)))
          (group (make-group-node x y))
-         ;; Top oval (parameters)
-         (oval1 (make-oval-node 0 0 80 30 fill stroke))
-         ;; Bottom oval (body, slightly offset)
-         (oval2 (make-oval-node 0 25 80 30 fill stroke))
-         ;; Lambda text label
-         (label (make-text-node 40 42 lambda-text "12px monospace" "black" "center")))
-    (node-add-child! group oval1)
-    (node-add-child! group oval2)
+         ;; SICP-style: two side-by-side half-cells (like a cons pair)
+         ;; Each half is PROCEDURE_DIAMETER × PROCEDURE_DIAMETER (30×30)
+         (cell-w 30)
+         (cell-h 30)
+         (total-w (* 2 cell-w))
+         ;; Outer rounded rectangle for the pair
+         (bg (make-rect-node 0 0 total-w cell-h fill dark-stroke))
+         ;; Vertical divider down the middle
+         (divider (make-line-node (list (list cell-w 0) (list cell-w cell-h))
+                                 dark-stroke 1 #f))
+         ;; Small filled dot in left half (body/params pointer)
+         (dot-l (make-oval-node (- (/ cell-w 2) 3)
+                                (- (/ cell-h 2) 3)
+                                6 6 "#555" "#555"))
+         ;; Small filled dot in right half (env pointer)
+         (dot-r (make-oval-node (- (+ cell-w (/ cell-w 2)) 3)
+                                (- (/ cell-h 2) 3)
+                                6 6 "#555" "#555"))
+         ;; Lambda text label below the pair
+         (label (make-text-node (/ total-w 2) (+ cell-h 12) lambda-text
+                                "10px monospace" "#555" "center")))
+    ;; Round the corners
+    (node-set-prop! bg 'border-radius 4)
+    (node-add-child! group bg)
+    (node-add-child! group divider)
+    (node-add-child! group dot-l)
+    (node-add-child! group dot-r)
     (node-add-child! group label)
-    (set-node-width! group 80)
-    (set-node-height! group 55)
+    ;; Width = max of cell pair or text; estimate text width
+    (let ((text-w (+ 8 (* (string-length lambda-text) 6))))
+      (set-node-width! group (max total-w text-w)))
+    (set-node-height! group (+ cell-h 20))
     group))
 
-;;; An environment frame: rectangle with name header
+;;; An environment frame: rounded rectangle with name header
 ;;;
-;;;   ┌─────────────────┐
+;;;   ╭─────────────────╮
 ;;;   │  GLOBAL ENV     │
 ;;;   │  x: 5           │
 ;;;   │  y: 10          │
-;;;   └─────────────────┘
+;;;   ╰─────────────────╯
 ;;;
 (define (make-frame-display-node x y width height name fill-color)
   (let* ((fill (color->hex fill-color))
          (stroke (color->hex (complement-color fill-color)))
+         (dark-stroke (color->hex (darken-color fill-color)))
          (group (make-group-node x y))
-         (rect (make-rect-node 0 0 width height fill stroke))
-         (title (make-text-node 5 14 name "bold 12px sans-serif"
-                                "black" "start")))
+         (rect (make-rect-node 0 0 width height fill dark-stroke))
+         ;; Separator line below title
+         (sep-line (make-line-node (list (list 0 22) (list width 22))
+                                  dark-stroke 0.5 #f))
+         (title (make-text-node 8 15 name "bold 11px sans-serif"
+                                "#333" "start")))
+    ;; Round the frame corners
+    (node-set-prop! rect 'border-radius 6)
     (node-add-child! group rect)
+    (node-add-child! group sep-line)
     (node-add-child! group title)
     (set-node-width! group width)
     (set-node-height! group height)
@@ -259,20 +288,27 @@
 ;;; A binding line inside a frame: "var: value" or "var: ──▶" (pointer)
 (define (make-binding-display-node x y var-name val-text value-type)
   (let* ((group (make-group-node x y))
-         (var-label (make-text-node 5 0 (string-append var-name ":")
-                                   "12px monospace" "#333" "start")))
+         (var-label (make-text-node 8 0 (string-append var-name ":")
+                                   "bold 11px monospace" "#444" "start")))
+    (node-set-prop! group 'var-name var-name)
     (node-add-child! group var-label)
     (cond
      ((eq? value-type 'atom)
       ;; Show value text inline
-      (let ((val-label (make-text-node (+ 10 (* (string-length var-name) 8))
+      (let ((val-label (make-text-node (+ 14 (* (string-length var-name) 7))
                                        0 val-text
-                                       "12px monospace" "#555" "start")))
+                                       "11px monospace" "#666" "start")))
+        (node-set-prop! val-label 'is-val-label #t)
         (node-add-child! group val-label)))
-     ;; For 'procedure and 'pair, a pointer line will be added
-     ;; by the observer/renderer
+     ((eq? value-type 'procedure)
+      ;; Add a small filled dot showing "this value is a pointer"
+      (let* ((dot-x (+ 8 (* (+ (string-length var-name) 1) 7) 10))
+             (dot (make-oval-node (- dot-x 3) -3 6 6 "#555" "#555")))
+        (node-add-child! group dot)
+        (node-set-prop! group 'dot-x dot-x)))
+     ;; For 'pair, a pointer line will be added by observer/renderer
      )
-    (set-node-height! group 16)
+    (set-node-height! group 18)
     group))
 
 ;;; A null object: diagonal line (represents empty list)

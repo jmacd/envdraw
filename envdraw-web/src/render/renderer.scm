@@ -68,14 +68,29 @@
   (let ((w (node-width node))
         (h (node-height node))
         (fill (node-prop node 'fill))
-        (stroke (node-prop node 'stroke)))
-    (when fill
-      (canvas-set-fill-style! ctx fill)
-      (canvas-fill-rect! ctx ax ay w h))
-    (when stroke
-      (canvas-set-stroke-style! ctx stroke)
-      (canvas-set-line-width! ctx 1)
-      (canvas-stroke-rect! ctx ax ay w h))))
+        (stroke (node-prop node 'stroke))
+        (radius (or (node-prop node 'border-radius) 0)))
+    (if (> radius 0)
+        ;; Rounded rectangle
+        (begin
+          (when fill
+            (canvas-set-fill-style! ctx fill)
+            (canvas-round-rect! ctx ax ay w h radius)
+            (canvas-fill! ctx))
+          (when stroke
+            (canvas-set-stroke-style! ctx stroke)
+            (canvas-set-line-width! ctx 1)
+            (canvas-round-rect! ctx ax ay w h radius)
+            (canvas-stroke! ctx)))
+        ;; Sharp rectangle
+        (begin
+          (when fill
+            (canvas-set-fill-style! ctx fill)
+            (canvas-fill-rect! ctx ax ay w h))
+          (when stroke
+            (canvas-set-stroke-style! ctx stroke)
+            (canvas-set-line-width! ctx 1)
+            (canvas-stroke-rect! ctx ax ay w h))))))
 
 (define (render-oval ctx node ax ay)
   (let ((w (node-width node))
@@ -123,7 +138,7 @@
 (define (render-text ctx node ax ay)
   (let ((text (node-prop node 'text))
         (font (node-prop node 'font))
-        (fill (or (node-prop node 'fill) "black"))
+        (fill (or (node-prop node 'fill) "#333"))
         (anchor (or (node-prop node 'anchor) "start")))
     (when text
       (when font (canvas-set-font! ctx font))
@@ -132,7 +147,7 @@
                               (cond ((string=? anchor "center") "center")
                                     ((string=? anchor "end") "end")
                                     (else "start")))
-      (canvas-set-text-baseline! ctx "alphabetic")
+      (canvas-set-text-baseline! ctx "middle")
       (canvas-fill-text! ctx text ax ay))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -155,8 +170,8 @@
     (when (> len 0)
       (let* ((ux (/ dx len))  ; unit vector along line
              (uy (/ dy len))
-             (arrow-len 10)
-             (arrow-width 5)
+             (arrow-len 8)
+             (arrow-width 4)
              ;; Base of arrowhead
              (bx (- ex (* ux arrow-len)))
              (by (- ey (* uy arrow-len)))

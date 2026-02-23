@@ -114,6 +114,9 @@
 (define-foreign canvas-clear-line-dash! "ctx" "clearLineDash"
   (ref null extern) -> none)
 
+(define-foreign canvas-round-rect! "ctx" "roundRect"
+  (ref null extern) f64 f64 f64 f64 f64 -> none)
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;                 FFI : APP (JS → Scheme callbacks)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -144,6 +147,9 @@
   (ref null extern) -> none)
 
 (define-foreign register-mouse-up-handler "app" "registerMouseUpHandler"
+  (ref null extern) -> none)
+
+(define-foreign register-gc-handler "app" "registerGCHandler"
   (ref null extern) -> none)
 
 ;;; Output functions — Scheme calls JS to update DOM
@@ -420,6 +426,11 @@
      (procedure->external
       (lambda (x y)
         (handle-mouse-up! x y))))
+
+    ;; GC: garbage collect unreachable nodes
+    (register-gc-handler
+     (procedure->external
+      (lambda () (handle-gc!))))
 
     ;; Initial render — show the GLOBAL ENVIRONMENT frame
     (request-render!)

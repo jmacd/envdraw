@@ -11,6 +11,15 @@
 ;;; Copyright (C) 2026 Josh MacDonald
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;                    UTILITIES
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define (any pred lst)
+  (cond ((null? lst) #f)
+        ((pred (car lst)) #t)
+        (else (any pred (cdr lst)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;                    STATE
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -25,6 +34,56 @@
 
 ;;; Map from proc-id → enclosing frame-id (for pointer routing)
 (define *proc-frame-map* '())
+
+;;; Pointer registry: list of (line-node source-node target-node kind)
+;;; Used to recalculate pointer paths when nodes are dragged.
+(define *pointers* '())
+
+(define (register-pointer! line-node source-node target-node kind
+                          . binding-offset)
+  (set! *pointers*
+        (cons (list line-node source-node target-node kind
+                    (if (null? binding-offset) #f (car binding-offset)))
+              *pointers*)))
+
+;;; Recalculate all pointer paths that involve a given node.
+(define (update-pointers-for-node! moved-node)
+  (for-each
+   (lambda (entry)
+     (let ((line-node   (car entry))
+           (source-node (cadr entry))
+           (target-node (caddr entry))
+           (kind        (cadddr entry)))
+       (when (or (eq? source-node moved-node)
+                 (eq? target-node moved-node))
+         (let* ((sx (node-x source-node))
+                (sy (node-y source-node))
+                (sw (node-width source-node))
+                (sh (node-height source-node))
+                (tx (node-x target-node))
+                (ty (node-y target-node))
+                (tw (node-width target-node))
+                (th (node-height target-node))
+                (offset (list-ref entry 4))
+                (new-pts
+                 (cond
+                  ((eq? kind 'binding)
+                   ;; Binding arrow: from dot in binding row → left-half dot of proc
+                   (let ((dot-x (if offset (car offset) sw))
+                         (bind-y (if offset (cdr offset) (* 0.4 sh))))
+                     (list (list (+ sx dot-x) (+ sy bind-y))
+                           (list (+ tx 15) (+ ty 15)))))
+                  ((eq? kind 'proc-env)
+                   ;; Proc env arrow: right-half dot → frame center
+                   (list (list (+ sx 45) (+ sy 15))
+                         (list (+ tx (* 0.5 tw))
+                               (+ ty (* 0.5 th)))))
+                  (else
+                   ;; Env/other pointers: use full routing algorithm
+                   (compute-pointer-path
+                    kind sx sy sw sh tx ty tw th)))))
+           (node-set-prop! line-node 'points new-pts)))))
+   *pointers*))
 
 ;;; Current rendering context and canvas dimensions
 (define *render-ctx* #f)
@@ -95,14 +154,14 @@
 
 (define (get-insertion-point frame-id)
   (let ((entry (assoc frame-id *frame-insertion-points*)))
-    (if entry (cdr entry) 24)))  ; start below frame title
+    (if entry (cdr entry) 28)))  ; start below frame title + separator
 
 (define (advance-insertion-point! frame-id amount)
   (let ((entry (assoc frame-id *frame-insertion-points*)))
     (if entry
         (set-cdr! entry (+ (cdr entry) amount))
         (set! *frame-insertion-points*
-              (cons (cons frame-id (+ 24 amount))
+              (cons (cons frame-id (+ 28 amount))
                     *frame-insertion-points*)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -144,6 +203,7 @@
   (set! *frame-nodes* '())
   (set! *proc-nodes* '())
   (set! *proc-frame-map* '())
+  (set! *pointers* '())
   (set! *frame-insertion-points* '())
   (set! *color-index* 0)
   (make-eval-observer
@@ -170,6 +230,8 @@
        frame-id))
 
    ;; on-binding-placed: (frame-id var-name value value-type) → binding-id
+   ;; For value-type 'procedure, value is the proc-id (scene graph node id).
+   ;; For other types, value is the viewed-rep string.
    (lambda (frame-id var-name value value-type)
      (let ((frame-entry (assoc frame-id *frame-nodes*)))
        (when frame-entry
@@ -184,21 +246,73 @@
                                    (format-sexp value))
                                value-type)))
            (node-add-child! frame-node binding-node)
-           (advance-insertion-point! frame-id 18)
-           ;; Grow frame height if needed
-           (let ((new-h (+ y-offset 24)))
+           (advance-insertion-point! frame-id 20)
+           ;; Grow frame height if needed (with bottom padding)
+           (let ((new-h (+ y-offset 30)))
              (when (> new-h (node-height frame-node))
                (set-node-height! frame-node new-h)
                ;; Update the background rectangle height
                (let ((bg-rect (car (node-children frame-node))))
                  (when (eq? (node-type bg-rect) 'rect)
                    (set-node-height! bg-rect new-h)))))
+           ;; Draw binding→procedure arrow when binding a procedure
+           (when (eq? value-type 'procedure)
+             (let ((proc-entry (assoc value *proc-nodes*)))
+               (when proc-entry
+                 (let* ((proc-node (cdr proc-entry))
+                        ;; Arrow from the dot in the binding row
+                        (dot-x (or (node-prop binding-node 'dot-x)
+                                   (node-width frame-node)))
+                        (bx (+ (node-x frame-node) dot-x))
+                        (by (+ (node-y frame-node) y-offset))
+                        (px (node-x proc-node))
+                        ;; Target: left-half dot (center at x+15, y+15)
+                        (py (+ (node-y proc-node) 15))
+                        (pts (list (list bx by) (list px py)))
+                        (ptr (make-line-node pts "#666" 1.2 #t)))
+                   (node-add-child! scene-root ptr)
+                   (register-pointer! ptr frame-node proc-node 'binding
+                                      (cons dot-x y-offset))))))
            (request-render!)
            (node-id binding-node)))))
 
    ;; on-binding-updated: (frame-id var-name new-value value-type) → void
    (lambda (frame-id var-name new-value value-type)
-     ;; TODO: find and update the binding display node
+     (let ((frame-entry (assoc frame-id *frame-nodes*)))
+       (when frame-entry
+         (let* ((frame-node (cdr frame-entry))
+                (var-str (if (symbol? var-name)
+                             (symbol->string var-name)
+                             var-name)))
+           ;; Search frame children for the binding group with matching var-name
+           (let loop ((kids (node-children frame-node)))
+             (cond
+              ((null? kids) #f)
+              ((string=? (or (node-prop (car kids) 'var-name) "") var-str)
+               ;; Found the binding node; find and update its val-label child
+               (let ((binding-node (car kids)))
+                 ;; Look for existing val-label child and update its text
+                 (let vlp ((ch (node-children binding-node)))
+                   (cond
+                    ((null? ch)
+                     ;; No val-label yet (was a pointer binding, now atom)
+                     ;; Add a new value label
+                     (when (eq? value-type 'atom)
+                       (let ((val-label
+                              (make-text-node
+                               (+ 14 (* (string-length var-str) 7))
+                               0 (if (string? new-value) new-value
+                                     (format-sexp new-value))
+                               "11px monospace" "#666" "start")))
+                         (node-set-prop! val-label 'is-val-label #t)
+                         (node-add-child! binding-node val-label))))
+                    ((node-prop (car ch) 'is-val-label)
+                     ;; Update existing val-label text
+                     (node-set-prop! (car ch) 'text
+                                     (if (string? new-value) new-value
+                                         (format-sexp new-value))))
+                    (else (vlp (cdr ch)))))))
+              (else (loop (cdr kids))))))))
      (request-render!))
 
    ;; on-procedure-created: (lambda-text frame-id) → proc-id
@@ -214,7 +328,7 @@
        (node-add-child! scene-root proc-node)
        ;; Place near the enclosing frame
        (place-node! proc-node near-node)
-       ;; Draw routed pointer from procedure to enclosing frame
+       ;; Draw routed pointer from right-half dot to enclosing frame
        (when frame-entry
          (let* ((frame-node (cdr frame-entry))
                 (fx (node-x frame-node))
@@ -223,15 +337,17 @@
                 (fh (node-height frame-node))
                 (px (node-x proc-node))
                 (py (node-y proc-node))
-                (pw (node-width proc-node))
-                (ph (node-height proc-node))
-                ;; Use env pointer routing between the proc and frame
-                (pts (compute-pointer-path
-                      'env
-                      px py pw ph
-                      fx fy fw fh))
-                (ptr (make-line-node pts "black" 1.5 #t)))
-           (node-add-child! scene-root ptr)))
+                ;; Right-half dot center: x = px + 45, y = py + 15
+                ;; (cell-w=30, so right half center is at 30+15=45, mid-height=15)
+                (dot-x (+ px 45))
+                (dot-y (+ py 15))
+                ;; Target: left edge center of frame
+                (tx (+ fx (* 0.5 fw)))
+                (ty (+ fy (* 0.5 fh)))
+                (pts (list (list dot-x dot-y) (list tx ty)))
+                (ptr (make-line-node pts "#666" 1.2 #t)))
+           (node-add-child! scene-root ptr)
+           (register-pointer! ptr proc-node frame-node 'proc-env)))
        (set! *proc-nodes* (cons (cons proc-id proc-node) *proc-nodes*))
        (set! *proc-frame-map* (cons (cons proc-id frame-id) *proc-frame-map*))
        (request-render!)
@@ -257,8 +373,9 @@
                       'env
                       cx cy cw ch
                       px py pw ph))
-                (ptr (make-line-node pts "#555" 1.5 #t)))
+                (ptr (make-line-node pts "#777" 1.2 #t)))
            (node-add-child! *scene-root* ptr)
+           (register-pointer! ptr child-node parent-node 'env)
            (request-render!)))))
 
    ;; on-before-eval: (expr env-name indent-level) → void
@@ -293,13 +410,13 @@
      (write-trace-line (string-append "*** Error: " s)))
 
    ;; on-gc-mark: (object-id) → void
+   ;; Not used — GC is handled by handle-gc! which does full mark+sweep
    (lambda (obj-id)
-     ;; TODO: reduce opacity of garbage nodes
      (values))
 
    ;; on-gc-sweep: (object-id) → void
+   ;; Not used — GC is handled by handle-gc! which does full mark+sweep
    (lambda (obj-id)
-     ;; TODO: remove garbage nodes from scene graph
      (values))
 
    ;; on-request-render: () → void
@@ -318,14 +435,20 @@
 (define (handle-mouse-down! wx wy)
   ;; Hit-test the scene graph to find the deepest clickable node.
   ;; Walk up to find a draggable container (frame group or proc group).
-  (when *scene-root*
-    (let ((hit (hit-test *scene-root* wx wy)))
-      (when hit
-        (let ((target (find-draggable-ancestor hit)))
-          (when target
-            (set! *drag-node* target)
-            (set! *drag-offset-x* (- wx (node-absolute-x target)))
-            (set! *drag-offset-y* (- wy (node-absolute-y target)))))))))
+  ;; Returns #t if a draggable node was found, #f otherwise.
+  (if (not *scene-root*)
+      #f
+      (let ((hit (hit-test *scene-root* wx wy)))
+        (if (not hit)
+            #f
+            (let ((target (find-draggable-ancestor hit)))
+              (if (not target)
+                  #f
+                  (begin
+                    (set! *drag-node* target)
+                    (set! *drag-offset-x* (- wx (node-absolute-x target)))
+                    (set! *drag-offset-y* (- wy (node-absolute-y target)))
+                    #t)))))))
 
 (define (handle-mouse-move! wx wy)
   (when *drag-node*
@@ -340,11 +463,14 @@
           (begin
             (set-node-x! *drag-node* new-x)
             (set-node-y! *drag-node* new-y)))
+      ;; Recalculate any pointer arrows connected to this node
+      (update-pointers-for-node! *drag-node*)
       (request-render!))))
 
 (define (handle-mouse-up! wx wy)
   (when *drag-node*
-    ;; TODO: update pointer routes for moved node
+    (update-pointers-for-node! *drag-node*)
+    (request-render!)
     (set! *drag-node* #f)))
 
 ;;; Walk up the scene graph to find the nearest draggable group —
@@ -353,12 +479,81 @@
 (define (find-draggable-ancestor node)
   (cond ((not node) #f)
         ((not (node-parent node)) #f)  ; root itself is not draggable
-        ;; Direct child of root → this is a top-level draggable group
-        ((and (node-parent node)
-              (node-parent (node-parent node))
-              (not (node-parent (node-parent (node-parent node)))))
-         node)
-        ;; A direct child of root (whose parent has no parent)
+        ;; Direct child of root → parent's parent is #f
         ((not (node-parent (node-parent node)))
          node)
         (else (find-draggable-ancestor (node-parent node)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;             GARBAGE COLLECTION (sweep unreachable nodes)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define (handle-gc!)
+  ;; Get reachable ids from the evaluator's environment walk
+  (let* ((result (env-gc-reachable-ids))
+         (reachable-frames (car result))
+         (reachable-procs  (cadr result))
+         (removed 0))
+    ;; Sweep unreachable frame nodes
+    (let loop ((entries *frame-nodes*) (keep '()))
+      (if (null? entries)
+          (set! *frame-nodes* keep)
+          (let ((fid (caar entries))
+                (fnode (cdar entries)))
+            (if (member fid reachable-frames)
+                (loop (cdr entries) (cons (car entries) keep))
+                (begin
+                  (node-remove-child! *scene-root* fnode)
+                  (set! removed (+ removed 1))
+                  (loop (cdr entries) keep))))))
+    ;; Sweep unreachable proc nodes
+    (let loop ((entries *proc-nodes*) (keep '()))
+      (if (null? entries)
+          (set! *proc-nodes* keep)
+          (let ((pid (caar entries))
+                (pnode (cdar entries)))
+            (if (member pid reachable-procs)
+                (loop (cdr entries) (cons (car entries) keep))
+                (begin
+                  (node-remove-child! *scene-root* pnode)
+                  (set! removed (+ removed 1))
+                  (loop (cdr entries) keep))))))
+    ;; Sweep pointers whose source or target was removed
+    (set! *pointers*
+          (filter (lambda (entry)
+                    (let ((src (cadr entry))
+                          (tgt (caddr entry)))
+                      (and (node-parent src) (node-parent tgt))))
+                  *pointers*))
+    ;; Remove orphan line nodes (pointers) from scene root
+    (let loop ((kids (node-children *scene-root*)))
+      (unless (null? kids)
+        (let ((child (car kids)))
+          (when (and (eq? (node-type child) 'line)
+                     (not (node-parent (car kids))))
+            ;; Already removed via pointer sweep; skip
+            #f))
+        (loop (cdr kids))))
+    ;; Clean up orphan line-nodes whose source/target were removed
+    (for-each
+     (lambda (child)
+       (when (eq? (node-type child) 'line)
+         ;; Check if this line is still in *pointers*
+         (let ((still? (any (lambda (entry) (eq? (car entry) child))
+                            *pointers*)))
+           (unless still?
+             (node-remove-child! *scene-root* child)
+             (set! removed (+ removed 1))))))
+     ;; Copy the children list since we're modifying it
+     (list-copy (node-children *scene-root*)))
+    ;; Clean up proc-frame-map
+    (set! *proc-frame-map*
+          (filter (lambda (entry) (member (car entry) reachable-procs))
+                  *proc-frame-map*))
+    ;; Clean up insertion points for removed frames
+    (set! *frame-insertion-points*
+          (filter (lambda (entry) (member (car entry) reachable-frames))
+                  *frame-insertion-points*))
+    (request-render!)
+    (write-trace-line
+     (string-append "GC: removed " (number->string removed) " objects"))))

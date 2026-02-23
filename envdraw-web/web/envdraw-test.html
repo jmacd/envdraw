@@ -18,7 +18,8 @@ window.addEventListener("load", async () => {
           fillText(){}, setFont(){}, setTextAlign(){}, setTextBaseline(){},
           measureTextWidth(){ return 50; }, save(){}, restore(){},
           translate(){}, scale(){}, setGlobalAlpha(){},
-          setLineDash(){}, clearLineDash(){}
+          setLineDash(){}, clearLineDash(){},
+          roundRect(){}
         },
         app: {
           registerEvalHandler(fn) {},
@@ -30,6 +31,7 @@ window.addEventListener("load", async () => {
           registerMouseDownHandler(fn) {},
           registerMouseMoveHandler(fn) {},
           registerMouseUpHandler(fn) {},
+          registerGCHandler(fn) {},
           traceAppend(text) { console.log("[trace]", text); },
           setResultText(text) { console.log("[result]", text); },
           getCanvasContext() { return null; },

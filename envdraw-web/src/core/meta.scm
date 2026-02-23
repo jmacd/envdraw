@@ -28,6 +28,14 @@
   (id    procedure-info-id)
   (frame procedure-info-frame))
 
+;;; Set the late-bound callback used by environments.scm to extract
+;;; the scene-graph node ID from a compound procedure value.
+(set! *extract-proc-id*
+  (lambda (val)
+    (if (and (pair? val) (procedure-info? (car val)))
+        (procedure-info-id (car val))
+        #f)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;                    EXTERNAL REPRESENTATIONS
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -450,10 +458,13 @@
 ;;; Creates a compound procedure representation and notifies observer.
 (define (make-procedure lambda-exp env)
   (let* ((fi (frame-info-of env))
+         ;; Reconstruct clean lambda sexp: the car of lambda-exp is the
+         ;; special-form object (special-form lambda), not the symbol lambda.
+         (clean-exp (cons 'lambda (cdr lambda-exp)))
          (proc-id
           (if *meta-observer*
               ((observer-on-procedure-created *meta-observer*)
-               (format-sexp lambda-exp)
+               (format-sexp clean-exp)
                (frame-info-id fi))
               "proc-anon"))
          (pi (make-procedure-info proc-id fi))
@@ -667,3 +678,36 @@
 (define (env-toggle-use-step)
   (set! view:continue view:use-stepping?)
   (set! view:use-stepping? (not view:use-stepping?)))
+
+;;; Garbage collection — find all reachable frame-ids and proc-ids
+;;; by walking from the-global-environment.
+;;; Returns (list reachable-frame-ids reachable-proc-ids)
+;;; where each is a list of strings.
+(define (env-gc-reachable-ids)
+  (let ((visited-frames '())
+        (visited-procs  '()))
+    ;; Walk an environment chain, marking all frames reachable.
+    (define (walk-env env)
+      (unless (null? env)
+        (let ((fid (frame-info-id (frame-info-of env))))
+          (unless (member fid visited-frames)
+            (set! visited-frames (cons fid visited-frames))
+            ;; Walk bindings in this frame for compound procedures
+            (let loop ((bindings (first-frame env)))
+              (unless (null? bindings)
+                (let ((val (binding-value (first-binding bindings))))
+                  (when (compound-procedure? val)
+                    (walk-proc val)))
+                (loop (rest-bindings bindings))))
+            ;; Walk parent frames
+            (unless (no-more-frames? (rest-frames env))
+              (walk-env (rest-frames env)))))))
+    ;; Walk a compound procedure: mark its proc-id and enclosing env
+    (define (walk-proc proc)
+      (let ((pid (procedure-info-id (procedure-info-of proc))))
+        (unless (member pid visited-procs)
+          (set! visited-procs (cons pid visited-procs))
+          (walk-env (procedure-environment proc)))))
+    ;; Start from the global environment
+    (walk-env the-global-environment)
+    (list visited-frames visited-procs)))

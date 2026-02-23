@@ -42,9 +42,9 @@
 
 ;;; Complement color (used for outlines, etc.)
 (define (complement-color c)
-  (make-color (max 0 (- (color-r c) 10))
-              (max 0 (- (color-g c) 10))
-              (max 0 (- (color-b c) 10))))
+  (make-color (max 0 (- (color-r c) 20))
+              (max 0 (- (color-g c) 20))
+              (max 0 (- (color-b c) 20))))
 
 ;;; Darken a color by 50 points
 (define (darken-color c)

@@ -144,6 +144,10 @@
   (if (stub-ctx? ctx) (stub-ctx-push! ctx 'clear-line-dash)
       #f))
 
+(define (canvas-round-rect! ctx x y w h r)
+  (if (stub-ctx? ctx) (stub-ctx-push! ctx 'round-rect x y w h r)
+      #f))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;          Hoot define-foreign forms (for Wasm build)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
