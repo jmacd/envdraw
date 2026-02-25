@@ -110,6 +110,22 @@
 (define-foreign console-error "app" "consoleError"
   (ref string) -> none)
 
+;;; D3 diagram graph-mutation FFI stubs
+(define-foreign d3-add-frame "app" "d3AddFrame"
+  (ref string) (ref string) (ref string) (ref string) -> none)
+(define-foreign d3-add-procedure "app" "d3AddProcedure"
+  (ref string) (ref string) (ref string) (ref string) -> none)
+(define-foreign d3-add-binding "app" "d3AddBinding"
+  (ref string) (ref string) (ref string) (ref string) (ref string) -> none)
+(define-foreign d3-update-binding "app" "d3UpdateBinding"
+  (ref string) (ref string) (ref string) (ref string) -> none)
+(define-foreign d3-remove-node "app" "d3RemoveNode"
+  (ref string) -> none)
+(define-foreign d3-remove-edge "app" "d3RemoveEdge"
+  (ref string) (ref string) -> none)
+(define-foreign d3-request-render "app" "d3RequestRender"
+  -> none)
+
 (console-log "phase 1b: all app FFI OK")
 
 ;;; Include model files one by one

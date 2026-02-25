@@ -66,6 +66,9 @@
 ;;; Observer interface (depends on nothing)
 (load-relative "core/eval-observer.scm")
 
+;;; D3 FFI stubs (for native testing; replaced by define-foreign in Wasm)
+(load-relative "render/d3-ffi-stubs.scm")
+
 ;;; Web observer (depends on scene-graph, renderer, eval-observer, color)
 (load-relative "ui/web-observer.scm")
 

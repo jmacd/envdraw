@@ -175,6 +175,31 @@
   (ref string) -> none)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;                 FFI : D3 DIAGRAM (graph mutations)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-foreign d3-add-frame "app" "d3AddFrame"
+  (ref string) (ref string) (ref string) (ref string) -> none)
+
+(define-foreign d3-add-procedure "app" "d3AddProcedure"
+  (ref string) (ref string) (ref string) (ref string) -> none)
+
+(define-foreign d3-add-binding "app" "d3AddBinding"
+  (ref string) (ref string) (ref string) (ref string) (ref string) -> none)
+
+(define-foreign d3-update-binding "app" "d3UpdateBinding"
+  (ref string) (ref string) (ref string) (ref string) -> none)
+
+(define-foreign d3-remove-node "app" "d3RemoveNode"
+  (ref string) -> none)
+
+(define-foreign d3-remove-edge "app" "d3RemoveEdge"
+  (ref string) (ref string) -> none)
+
+(define-foreign d3-request-render "app" "d3RequestRender"
+  -> none)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;                 INCLUDE SOURCE FILES
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;

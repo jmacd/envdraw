@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>EnvDraw — Environment Diagrams</title>
   <link rel="stylesheet" href="style.css">
+  <script src="https://d3js.org/d3.v7.min.js"></script>
 </head>
 <body>
   <div id="app">
@@ -41,7 +42,7 @@
     <!-- Main content: canvas + optional trace sidebar -->
     <div id="main-area">
       <div id="canvas-container">
-        <canvas id="diagram-canvas"></canvas>
+        <svg id="diagram-svg"></svg>
         <!-- Zoom controls overlay -->
         <div id="zoom-controls">
           <button id="btn-zoom-in" class="zoom-btn" title="Zoom in (+)">+</button>
@@ -86,10 +87,11 @@
 
   </div>
   <script type="text/javascript" src="reflect.js"></script>
+  <script type="text/javascript" src="d3-diagram.js"></script>
   <script>
     // Cache-bust boot.js — bump version when boot.js changes
     const s = document.createElement("script");
-    s.src = "boot.js?v=2";
+    s.src = "boot.js?v=3";
     document.body.appendChild(s);
   </script>
 </body>

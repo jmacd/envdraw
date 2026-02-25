@@ -41,7 +41,14 @@ window.addEventListener("load", async () => {
             console.log("[EnvDraw]", msg);
             document.getElementById("status").textContent = msg;
           },
-          consoleError(msg) { console.error("[EnvDraw]", msg); }
+          consoleError(msg) { console.error("[EnvDraw]", msg); },
+          d3AddFrame(id, name, parentId, color) { console.log("[d3] addFrame", id, name); },
+          d3AddProcedure(id, text, frameId, color) { console.log("[d3] addProc", id, text); },
+          d3AddBinding(fId, vName, val, vType, pId) { console.log("[d3] addBinding", fId, vName, val); },
+          d3UpdateBinding(fId, vName, val, vType) { console.log("[d3] updateBinding", fId, vName, val); },
+          d3RemoveNode(id) { console.log("[d3] removeNode", id); },
+          d3RemoveEdge(from, to) { console.log("[d3] removeEdge", from, to); },
+          d3RequestRender() {}
         }
       }
     });
