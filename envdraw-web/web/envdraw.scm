@@ -212,26 +212,12 @@
 ;;; Core data structures
 (include "../src/core/stacks.scm")
 
-;;; Model layer
-(include "../src/model/math.scm")
+;;; Model layer (color palette still used by web-observer)
 (include "../src/model/color.scm")
 
-;;; Canvas FFI — already defined above via define-foreign (skip stubs)
-
-;;; Scene graph
-(include "../src/model/scene-graph.scm")
-
-;;; Profiles — cons-cell sizing
-(include "../src/model/profiles.scm")
-
-;;; Placement — convex-hull layout
-(include "../src/model/placement.scm")
-
-;;; Pointer routing
-(include "../src/model/pointers.scm")
-
-;;; Renderer
-(include "../src/render/renderer.scm")
+;;; NOTE: Phase 5 — D3.js handles all layout and rendering.
+;;; Removed: math.scm, scene-graph.scm, profiles.scm, placement.scm,
+;;;          pointers.scm, renderer.scm
 
 ;;; Observer interface
 (include "../src/core/eval-observer.scm")
@@ -368,9 +354,8 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define (boot!)
-  ;; Create scene graph and observer
-  (let* ((root (make-group-node 0 0))
-         (obs (make-web-observer root))
+  ;; Create observer (D3 handles visualization)
+  (let* ((obs (make-web-observer))
          (eval-fn (envdraw-init obs))
          (ctx (get-canvas-context)))
 

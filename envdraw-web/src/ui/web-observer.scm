@@ -19,6 +19,11 @@
         ((pred (car lst)) #t)
         (else (any pred (cdr lst)))))
 
+(define (filter pred lst)
+  (cond ((null? lst) '())
+        ((pred (car lst)) (cons (car lst) (filter pred (cdr lst))))
+        (else (filter pred (cdr lst)))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;                    ID GENERATION
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -52,7 +57,6 @@
 
 ;;; Variables required by envdraw.scm boot! (kept for compatibility)
 ;;; These are effectively unused with D3 rendering.
-(define *scene-root* #f)
 (define *render-ctx* #f)
 (define *canvas-width* 800)
 (define *canvas-height* 600)
@@ -81,8 +85,7 @@
 ;;;                  MAKE WEB OBSERVER
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define (make-web-observer scene-root)
-  (set! *scene-root* scene-root)
+(define (make-web-observer)
   (set! *frame-ids* '())
   (set! *proc-ids* '())
   (set! *proc-frame-map* '())

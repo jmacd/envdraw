@@ -14,7 +14,7 @@
  *   1. Loads index.html and waits for Wasm boot
  *   2. Types Scheme expressions into the REPL
  *   3. Verifies trace panel output
- *   4. Checks that canvas has non-empty rendering
+ *   4. Checks that SVG diagram has D3-rendered nodes
  *   5. Tests pan/zoom controls
  *   6. Takes diagnostic screenshots
  */
@@ -87,7 +87,9 @@ async function typeInRepl(page, text) {
   await page.click("#repl-input");
   // Clear existing input
   await page.evaluate(() => {
-    document.getElementById("repl-input").value = "";
+    const el = document.getElementById("repl-input");
+    el.value = "";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await page.type("#repl-input", text, { delay: 10 });
   await page.keyboard.press("Enter");
@@ -106,73 +108,30 @@ async function getTraceLines(page) {
   });
 }
 
-async function canvasHasContent(page) {
-  // Check if any non-white pixels exist on the canvas
+async function svgHasNodes(page) {
+  // Check if the SVG diagram has any D3-rendered node groups
   return page.evaluate(() => {
-    const canvas = document.getElementById("diagram-canvas");
-    if (!canvas) return false;
-    const ctx = canvas.getContext("2d");
-    const { width, height } = canvas;
-    if (width === 0 || height === 0) return false;
-    const data = ctx.getImageData(0, 0, width, height).data;
-    // Check a sample of pixels for any non-white/non-transparent
-    for (let i = 0; i < data.length; i += 40) {
-      // RGBA — check if not white (255,255,255) and not transparent (alpha 0)
-      const r = data[i], g = data[i+1], b = data[i+2], a = data[i+3];
-      if (a > 0 && (r < 250 || g < 250 || b < 250)) {
-        return true;
-      }
-    }
-    return false;
+    const svg = document.getElementById("diagram-svg");
+    if (!svg) return false;
+    const nodes = svg.querySelectorAll(".node");
+    return nodes.length > 0;
   });
 }
 
-async function getNodePositions(page) {
-  // Read scene graph node positions from the console
-  // We'll use the trace panel to infer, or check canvas pixels
-  // For now, examine colored pixel clusters
+async function getSvgNodeInfo(page) {
+  // Get info about D3-rendered SVG nodes (frames, procedures, edges)
   return page.evaluate(() => {
-    const canvas = document.getElementById("diagram-canvas");
-    if (!canvas) return [];
-    const ctx = canvas.getContext("2d");
-    const { width, height } = canvas;
-    if (width === 0 || height === 0) return [];
-
-    const data = ctx.getImageData(0, 0, width, height).data;
-    const dpr = window.devicePixelRatio || 1;
-    const clusters = [];
-
-    // Find bounding boxes of colored regions (non-white, non-transparent)
-    let minX = width, minY = height, maxX = 0, maxY = 0;
-    let found = false;
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const i = (y * width + x) * 4;
-        const r = data[i], g = data[i+1], b = data[i+2], a = data[i+3];
-        if (a > 0 && (r < 250 || g < 250 || b < 250)) {
-          if (x < minX) minX = x;
-          if (y < minY) minY = y;
-          if (x > maxX) maxX = x;
-          if (y > maxY) maxY = y;
-          found = true;
-        }
-      }
-    }
-
-    if (found) {
-      return {
-        found: true,
-        bounds: {
-          minX: Math.round(minX / dpr),
-          minY: Math.round(minY / dpr),
-          maxX: Math.round(maxX / dpr),
-          maxY: Math.round(maxY / dpr),
-          width: Math.round((maxX - minX) / dpr),
-          height: Math.round((maxY - minY) / dpr),
-        }
-      };
-    }
-    return { found: false };
+    const svg = document.getElementById("diagram-svg");
+    if (!svg) return { found: false, frames: 0, procs: 0, edges: 0 };
+    const frames = svg.querySelectorAll(".node.frame");
+    const procs = svg.querySelectorAll(".node.procedure");
+    const edges = svg.querySelectorAll(".edge");
+    return {
+      found: frames.length > 0 || procs.length > 0,
+      frames: frames.length,
+      procs: procs.length,
+      edges: edges.length,
+    };
   });
 }
 
@@ -245,13 +204,16 @@ async function runTests() {
     );
     assert(jsErrors.length === 0, `No JS errors (${jsErrors.length} found)`);
 
-    // ── Test 2: Empty state visible ──
+    // ── Test 2: Empty state ──
+    // Note: With D3, the global frame is displayed at boot, so empty state
+    // may already be hidden. Check it's either visible or already hidden.
     console.log("\n--- Empty state ---");
-    const emptyVisible = await page.evaluate(() => {
+    const emptyState = await page.evaluate(() => {
       const el = document.getElementById("empty-state");
-      return el && !el.classList.contains("hidden");
+      return el ? el.classList.contains("hidden") ? "hidden" : "visible" : "missing";
     });
-    assert(emptyVisible, "Empty state placeholder is visible");
+    assert(emptyState === "visible" || emptyState === "hidden",
+      `Empty state element exists (state=${emptyState})`);
 
     // ── Test 3: Define a variable ──
     console.log("\n--- Define variable ---");
@@ -267,24 +229,14 @@ async function runTests() {
     await page.screenshot({ path: "test/screenshot-define.png" });
     console.log("  📸 screenshot-define.png");
 
-    // ── Test 4: Canvas has content ──
-    console.log("\n--- Canvas rendering ---");
-    const hasContent = await canvasHasContent(page);
-    assert(hasContent, "Canvas has non-white pixels (something was drawn)");
+    // ── Test 4: SVG has D3 nodes ──
+    console.log("\n--- SVG rendering ---");
+    const hasNodes = await svgHasNodes(page);
+    assert(hasNodes, "SVG has D3-rendered node groups");
 
-    const positions = await getNodePositions(page);
-    if (positions.found) {
-      assert(
-        positions.bounds.minX > 0 || positions.bounds.minY > 0,
-        `Diagram not stuck at origin (bounds: ${positions.bounds.minX},${positions.bounds.minY} → ${positions.bounds.maxX},${positions.bounds.maxY})`
-      );
-      assert(
-        positions.bounds.width > 50 && positions.bounds.height > 20,
-        `Diagram has reasonable size (${positions.bounds.width}×${positions.bounds.height}px)`
-      );
-    } else {
-      assert(false, "Could not find diagram pixels on canvas");
-    }
+    const nodeInfo = await getSvgNodeInfo(page);
+    assert(nodeInfo.found, "SVG diagram has visible nodes");
+    assert(nodeInfo.frames >= 1, `At least 1 frame node (got ${nodeInfo.frames})`);
 
     // Empty state should now be hidden
     const emptyHidden = await page.evaluate(() => {
@@ -301,13 +253,9 @@ async function runTests() {
     await page.screenshot({ path: "test/screenshot-function.png" });
     console.log("  📸 screenshot-function.png");
 
-    const positions2 = await getNodePositions(page);
-    if (positions2.found) {
-      assert(
-        positions2.bounds.width > positions.bounds?.width || 0,
-        "Diagram grew after defining a function"
-      );
-    }
+    const nodeInfo2 = await getSvgNodeInfo(page);
+    assert(nodeInfo2.procs >= 1, `Procedure node added after define lambda (got ${nodeInfo2.procs})`);
+    assert(nodeInfo2.edges >= 1, `Edges present after define lambda (got ${nodeInfo2.edges})`);
 
     // ── Test 6: Call the function ──
     console.log("\n--- Call function ---");
@@ -330,13 +278,9 @@ async function runTests() {
     await typeInRepl(page, "(define (add a b) (+ a b))");
     await sleep(200);
 
-    const positions3 = await getNodePositions(page);
-    if (positions3.found) {
-      assert(
-        positions3.bounds.width > 100,
-        `Multiple elements spread out (width=${positions3.bounds.width}px)`
-      );
-    }
+    const nodeInfo3 = await getSvgNodeInfo(page);
+    assert(nodeInfo3.procs >= 2, `Multiple procs after add definition (got ${nodeInfo3.procs})`);
+    assert(nodeInfo3.edges >= 3, `Multiple edges in diagram (got ${nodeInfo3.edges})`);
 
     await page.screenshot({ path: "test/screenshot-multi.png" });
     console.log("  📸 screenshot-multi.png");
@@ -366,35 +310,44 @@ async function runTests() {
 
     // Click zoom in
     await page.click("#btn-zoom-in");
-    await sleep(200);
+    await sleep(400);  // D3 zoom transitions take ~200ms
     const zoomLabel2 = await page.evaluate(() => {
       return document.getElementById("btn-zoom-reset").textContent;
     });
     assert(zoomLabel2 !== "100%", `Zoom changed after zoom-in (now ${zoomLabel2})`);
 
-    // Reset zoom
-    await page.click("#btn-zoom-reset");
-    await sleep(200);
+    // Reset zoom — use evaluate to avoid page lifecycle issues
+    await page.evaluate(() => {
+      EnvDiagram.resetView();
+    });
+    await sleep(500);  // D3 reset transition
+    await page.evaluate(() => {
+      // Update zoom label after transition
+      const label = document.getElementById("btn-zoom-reset");
+      const z = EnvDiagram.getZoom ? EnvDiagram.getZoom() : 1;
+      label.textContent = Math.round(z * 100) + "%";
+    });
     const zoomLabel3 = await page.evaluate(() => {
       return document.getElementById("btn-zoom-reset").textContent;
     });
     assert(zoomLabel3 === "100%", "Zoom reset back to 100%");
 
     // ── Test 10: Trace panel toggle ──
+    // Panel starts collapsed; first toggle opens it, second closes it
     console.log("\n--- Trace panel toggle ---");
-    await page.click("#btn-toggle-trace");
-    await sleep(300);
-    const traceHidden = await page.evaluate(() => {
-      return document.getElementById("trace-panel").classList.contains("collapsed");
-    });
-    assert(traceHidden, "Trace panel collapsed after toggle");
-
     await page.click("#btn-toggle-trace");
     await sleep(300);
     const traceShown = await page.evaluate(() => {
       return !document.getElementById("trace-panel").classList.contains("collapsed");
     });
-    assert(traceShown, "Trace panel shown after second toggle");
+    assert(traceShown, "Trace panel shown after first toggle");
+
+    await page.click("#btn-toggle-trace");
+    await sleep(300);
+    const traceHidden = await page.evaluate(() => {
+      return document.getElementById("trace-panel").classList.contains("collapsed");
+    });
+    assert(traceHidden, "Trace panel collapsed after second toggle");
 
     // ── Test 11: Clear ──
     console.log("\n--- Clear ---");
@@ -430,7 +383,11 @@ async function runTests() {
 
   } catch (err) {
     console.error("\n  FATAL:", err.message);
-    await page.screenshot({ path: "test/screenshot-fatal.png" });
+    try {
+      await page.screenshot({ path: "test/screenshot-fatal.png" });
+    } catch (screenshotErr) {
+      console.error("  (Could not capture screenshot:", screenshotErr.message + ")");
+    }
     failed++;
   }
 

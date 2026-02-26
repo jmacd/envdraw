@@ -38,14 +38,12 @@
 
 ;;; Initialize the evaluator
 (display "Initializing evaluator...\n")
-(let ((root (make-group-node 0 0)))
-  (set! *scene-root* root)
-  (let* ((obs (make-null-observer))
-         (evaluator (envdraw-init obs)))
-    ;; Store globally for tests
-    (set! eval-one evaluator)
-    ;; Set trace callback to suppress output during tests
-    (set! *trace-callback* (lambda (s) #f))))
+(let* ((obs (make-null-observer))
+       (evaluator (envdraw-init obs)))
+  ;; Store globally for tests
+  (set! eval-one evaluator)
+  ;; Set trace callback to suppress output during tests
+  (set! *trace-callback* (lambda (s) #f)))
 
 (display "\n--- Self-evaluating expressions ---\n")
 (test "integer"        "42"       "42")

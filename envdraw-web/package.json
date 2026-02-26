@@ -8,7 +8,9 @@
   "scripts": {
     "test": "node test/browser-test.mjs",
     "test:headed": "node test/browser-test.mjs --headed",
-    "test:debug": "node test/browser-test.mjs --debug"
+    "test:debug": "node test/browser-test.mjs --debug",
+    "inspect": "node test/d3-inspect.mjs --screenshot",
+    "inspect:headed": "node test/d3-inspect.mjs --headed --screenshot"
   },
   "keywords": [],
   "author": "",

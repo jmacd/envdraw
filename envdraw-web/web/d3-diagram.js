@@ -23,6 +23,8 @@ const EnvDiagram = (() => {
   let simulation;
   let zoomBehavior;
   let width = 800, height = 600;
+  let autoFitTimer = null;  // schedules fitToView after first mutations
+  let renderTimer = null;   // debounces simulation restarts across rapid mutations
 
   // ─── Configuration ──────────────────────────────────────────────
   const FRAME_MIN_W = 140;
@@ -135,43 +137,55 @@ const EnvDiagram = (() => {
 
     // Initialize force simulation
     simulation = d3.forceSimulation(nodes)
-      .force("charge", d3.forceManyBody().strength(-200))
-      .force("center", d3.forceCenter(width / 2, height / 2))
+      .force("charge", d3.forceManyBody().strength(-150))
       .force("collide", d3.forceCollide().radius(d =>
         d.type === "frame"
           ? Math.max(d.width, d.height) * 0.6 + 20
-          : 40
-      ).strength(0.8))
+          : Math.max(d.width || 60, d.height || 48) * 0.5 + 10
+      ).strength(0.8).iterations(2))
       .force("link", d3.forceLink(edges)
         .id(d => d.id)
         .distance(d => {
-          if (d.edgeType === "env") return 150;
-          if (d.edgeType === "proc-env") return 100;
-          if (d.edgeType === "binding") return 80;
+          if (d.edgeType === "env") return 160;
+          if (d.edgeType === "proc-env") return 120;
+          if (d.edgeType === "binding") return 130;
           return 120;
         })
         .strength(d => {
-          if (d.edgeType === "env") return 0.5;
-          if (d.edgeType === "binding") return 0.8;
-          if (d.edgeType === "proc-env") return 0.6;
-          return 0.3;
+          if (d.edgeType === "env") return 0.2;
+          if (d.edgeType === "binding") return 0.15;
+          if (d.edgeType === "proc-env") return 0.15;
+          return 0.2;
         })
       )
       .force("y", d3.forceY().y(d => {
         // Hierarchical: global at top, children below
         if (d.type === "frame") {
           const depth = getFrameDepth(d.id);
-          return height * 0.15 + depth * 180;
+          return 80 + depth * 170;
         }
-        // Procedures: same level as their frame
+        // Procedures: same depth level as their enclosing frame, offset down
         if (d.type === "procedure" && d.frameId) {
-          const fn = nodeById(d.frameId);
-          if (fn) return fn.y || height * 0.3;
+          const frameDepth = getFrameDepth(d.frameId);
+          return 80 + frameDepth * 170 + 30;
         }
         return height / 2;
-      }).strength(0.15))
-      .force("x", d3.forceX().x(width / 2).strength(0.02))
-      .alphaDecay(0.02)
+      }).strength(d => {
+        // Very strong Y keeps hierarchy stable
+        if (d.type === "frame") return 1.0;
+        if (d.type === "procedure") return 0.7;
+        return 0.3;
+      }))
+      .force("x", d3.forceX().x(d => {
+        // Spread procedures to the right of their frame
+        if (d.type === "procedure" && d.frameId) {
+          const fn = nodeById(d.frameId);
+          if (fn) return (fn.x || width / 2) + 180;
+        }
+        return width / 2;
+      }).strength(d => d.type === "procedure" ? 0.12 : 0.08))
+      .velocityDecay(0.7)
+      .alphaDecay(0.05)
       .on("tick", ticked);
 
     // Observe container resizing
@@ -180,7 +194,7 @@ const EnvDiagram = (() => {
       width = rect.width || 800;
       height = rect.height || 600;
       svg.attr("width", width).attr("height", height);
-      simulation.force("center", d3.forceCenter(width / 2, height / 2));
+      // Don't re-add forceCenter — we rely on forceY/forceX for positioning
       simulation.alpha(0.1).restart();
     });
     ro.observe(svgElement.parentElement);
@@ -210,30 +224,47 @@ const EnvDiagram = (() => {
     if (!s || !t) return "";
 
     let sx, sy, tx, ty;
+    const sw = s.width || FRAME_MIN_W;
+    const sh = s.height || 60;
+    const tw = t.width || FRAME_MIN_W;
+    const th = t.height || 60;
+
+    // Procedure dots are in the cons-cell rect, which sits at the top
+    // of the node bounding box.  The node center (d.y) is the middle of
+    // the full height (cell + label), so the dot Y in world coords is
+    // offset upward by (height - PROC_CELL_H) / 2.
+    function procDotY(node) {
+      return node.y - ((node.height || (PROC_CELL_H + PROC_LABEL_H)) - PROC_CELL_H) / 2;
+    }
 
     if (d.edgeType === "binding") {
       // From binding dot in source frame → left-dot of target procedure
       const bindIdx = frameBindings(s.id).findIndex(b => b.procId === t.id);
       const bindY = FRAME_HEADER_H + (bindIdx >= 0 ? bindIdx : 0) * BINDING_H + BINDING_H / 2;
-      sx = s.x + (s.width || FRAME_MIN_W) / 2;  // right edge of frame
-      sy = s.y - (s.height || 60) / 2 + bindY;
-      tx = t.x - PROC_CELL_W;   // left-dot of procedure
-      ty = t.y;
+      // Source: right side of frame at binding row height
+      sx = s.x + sw / 2;
+      sy = s.y - sh / 2 + bindY;
+      // Target: left-dot center of procedure (cons-cell left half-center)
+      tx = t.x - tw / 2 + PROC_CELL_W / 2;
+      ty = procDotY(t);
     } else if (d.edgeType === "proc-env") {
-      // From right-dot of procedure → center of frame
-      sx = t.x + PROC_CELL_W;  // Note: source is proc, but D3 might swap. Use stored types.
-      sy = t.y;
-      // Actually we need to be careful: source is proc, target is frame
-      sx = s.x + PROC_CELL_W * 0.5;   // right-half dot
-      sy = s.y;
-      tx = t.x;
-      ty = t.y;
+      // Source is procedure, target is frame
+      // From right-dot of procedure → nearest edge of target frame
+      sx = s.x - (s.width || PROC_CELL_W * 2) / 2 + PROC_CELL_W * 1.5;
+      sy = procDotY(s);
+      // Target: nearest point on frame border
+      const targetPt = nearestFrameEdge(t, sx, sy);
+      tx = targetPt.x;
+      ty = targetPt.y;
     } else if (d.edgeType === "env") {
-      // From top of child frame → bottom of parent frame
+      // Child frame → parent frame
+      // Source: top center of child frame
       sx = s.x;
-      sy = s.y - (s.height || 60) / 2;
-      tx = t.x;
-      ty = t.y + (t.height || 60) / 2;
+      sy = s.y - sh / 2;
+      // Target: nearest point on parent frame border
+      const targetPt = nearestFrameEdge(t, sx, sy);
+      tx = targetPt.x;
+      ty = targetPt.y;
     } else {
       sx = s.x;
       sy = s.y;
@@ -249,8 +280,51 @@ const EnvDiagram = (() => {
       ty -= (dy / len) * 8;
     }
 
-    // Simple straight line (could be curved in the future)
-    return `M${sx},${sy} L${tx},${ty}`;
+    // Use quadratic Bézier for a gentle curve
+    const mx = (sx + tx) / 2;
+    const my = (sy + ty) / 2;
+    // Offset control point perpendicular to the line
+    const ndx = -(ty - sy);
+    const ndy = tx - sx;
+    const nlen = Math.sqrt(ndx * ndx + ndy * ndy) || 1;
+    // Curvature factor varies by edge type
+    let curveFactor = 0;
+    if (d.edgeType === "binding") curveFactor = 0.15;
+    else if (d.edgeType === "proc-env") curveFactor = 0.12;
+    else if (d.edgeType === "env") curveFactor = 0.1;
+    const cx = mx + (ndx / nlen) * len * curveFactor;
+    const cy = my + (ndy / nlen) * len * curveFactor;
+
+    return `M${sx},${sy} Q${cx},${cy} ${tx},${ty}`;
+  }
+
+  /** Find the nearest point on a frame's border for an arrow target */
+  function nearestFrameEdge(frameNode, fromX, fromY) {
+    const fw = frameNode.width || FRAME_MIN_W;
+    const fh = frameNode.height || 60;
+    const fl = frameNode.x - fw / 2;
+    const fr = frameNode.x + fw / 2;
+    const ft = frameNode.y - fh / 2;
+    const fb = frameNode.y + fh / 2;
+
+    // Try all 4 edges and pick the one closest to the source point
+    const candidates = [
+      { x: Math.max(fl, Math.min(fr, fromX)), y: ft },  // top
+      { x: Math.max(fl, Math.min(fr, fromX)), y: fb },  // bottom
+      { x: fl, y: Math.max(ft, Math.min(fb, fromY)) },  // left
+      { x: fr, y: Math.max(ft, Math.min(fb, fromY)) },  // right
+    ];
+
+    let best = candidates[0];
+    let bestDist = Infinity;
+    for (const c of candidates) {
+      const d = Math.sqrt((c.x - fromX) ** 2 + (c.y - fromY) ** 2);
+      if (d < bestDist) {
+        bestDist = d;
+        best = c;
+      }
+    }
+    return best;
   }
 
   // ─── SVG rendering (D3 enter/update/exit) ──────────────────────
@@ -258,10 +332,24 @@ const EnvDiagram = (() => {
     renderEdges();
     renderNodes();
 
-    // Restart simulation with updated data
+    // Debounce simulation restart — a single eval step triggers
+    // multiple mutations (frame + bindings + procedure + edges) in
+    // rapid succession.  Restarting on every call pumps too much
+    // energy into the system.  Instead, batch them.
     simulation.nodes(nodes);
     simulation.force("link").links(edges);
-    simulation.alpha(0.5).restart();
+    if (renderTimer !== null) clearTimeout(renderTimer);
+    renderTimer = setTimeout(() => {
+      renderTimer = null;
+      simulation.alpha(0.2).restart();
+    }, 50);
+
+    // Auto-fit: debounce so we fit once after a burst of mutations settles
+    if (autoFitTimer !== null) clearTimeout(autoFitTimer);
+    autoFitTimer = setTimeout(() => {
+      autoFitTimer = null;
+      fitToView();
+    }, 900);
   }
 
   function renderEdges() {
@@ -273,8 +361,14 @@ const EnvDiagram = (() => {
       .append("path")
       .attr("class", d => `edge ${d.edgeType}`)
       .attr("fill", "none")
-      .attr("stroke", d => d.edgeType === "env" ? "#888" : "#666")
-      .attr("stroke-width", 1.2)
+      .attr("stroke", d => {
+        if (d.edgeType === "env") return "#888";
+        if (d.edgeType === "proc-env") return "#6a9";
+        if (d.edgeType === "binding") return "#555";
+        return "#666";
+      })
+      .attr("stroke-width", d => d.edgeType === "env" ? 1.0 : 1.2)
+      .attr("stroke-dasharray", d => d.edgeType === "env" ? "4,3" : null)
       .attr("marker-end", d =>
         d.edgeType === "env" ? "url(#arrowhead-env)" : "url(#arrowhead)")
       .attr("opacity", 0)
@@ -526,9 +620,11 @@ const EnvDiagram = (() => {
       node.x = (parent.x || width / 2) + (Math.random() - 0.5) * 60;
       node.y = (parent.y || height * 0.15) + 180;
     } else {
-      // Global frame: center top
+      // Global frame: pin at center top so it anchors the layout
       node.x = width / 2;
-      node.y = height * 0.15;
+      node.y = 80;
+      node.fx = width / 2;
+      node.fy = 80;
     }
 
     bindings[id] = [];
@@ -721,6 +817,8 @@ const EnvDiagram = (() => {
     edges = [];
     bindings = {};
     colorIndex = 0;
+    if (autoFitTimer !== null) { clearTimeout(autoFitTimer); autoFitTimer = null; }
+    if (renderTimer !== null) { clearTimeout(renderTimer); renderTimer = null; }
     edgeGroup.selectAll("*").remove();
     nodeGroup.selectAll("*").remove();
     simulation.nodes([]);

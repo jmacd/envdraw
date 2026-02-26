@@ -229,6 +229,7 @@ header#toolbar {
 #main-area {
   display: flex;
   flex: 1;
+  min-height: 0;
   overflow: hidden;
   position: relative;
 }
@@ -505,12 +506,96 @@ header#toolbar {
 /* ── REPL ──────────────────────────────────────────────────── */
 #repl-area {
   display: flex;
-  align-items: center;
-  padding: 0 16px;
-  height: 44px;
+  flex-direction: column;
+  height: 40vh;
+  min-height: 200px;
+  max-height: 50vh;
   background: var(--repl-bg);
   border-top: 1px solid #333;
   flex-shrink: 0;
+}
+
+#repl-log {
+  overflow-y: auto;
+  flex: 1 1 0;
+  min-height: 60px;
+  padding: 4px 0;
+}
+
+#repl-log::-webkit-scrollbar       { width: 6px; }
+#repl-log::-webkit-scrollbar-track  { background: transparent; }
+#repl-log::-webkit-scrollbar-thumb  { background: #444; border-radius: 3px; }
+
+.repl-log-block + .repl-log-block {
+  border-top: 1px solid #222;
+  margin-top: 1px;
+  padding-top: 1px;
+}
+
+.repl-log-line {
+  display: flex;
+  align-items: baseline;
+  padding: 0 12px;
+  line-height: 20px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  white-space: pre;
+}
+
+.repl-log-line .line-num {
+  min-width: 28px;
+  text-align: right;
+  padding-right: 8px;
+  color: var(--repl-dim);
+  font-size: 11px;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.repl-log-line .line-input {
+  color: var(--repl-fg);
+  white-space: pre;
+}
+
+.repl-log-line .line-result {
+  color: #7ec;
+  padding-left: 36px;
+  white-space: pre-wrap;
+}
+
+.repl-log-line .line-error {
+  color: #f66;
+  padding-left: 36px;
+  white-space: pre-wrap;
+}
+
+#repl-input-row {
+  display: flex;
+  align-items: flex-start;
+  padding: 2px 12px 4px;
+  flex-shrink: 0;
+  border-top: 1px solid #2a2a2a;
+}
+
+#input-line-nums {
+  display: flex;
+  flex-direction: column;
+  min-width: 28px;
+  text-align: right;
+  padding-right: 8px;
+  padding-top: 4px;
+  color: var(--repl-accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 20px;
+  user-select: none;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+#input-line-nums span {
+  display: block;
+  text-align: right;
 }
 
 .prompt {
@@ -519,8 +604,9 @@ header#toolbar {
   color: var(--repl-accent);
   font-weight: 700;
   user-select: none;
-  margin-right: 8px;
+  margin-right: 6px;
   flex-shrink: 0;
+  padding-top: 2px;
 }
 
 #repl-input {
@@ -532,19 +618,16 @@ header#toolbar {
   font-family: var(--font-mono);
   font-size: 13px;
   caret-color: var(--repl-accent);
-  line-height: 44px;
+  line-height: 20px;
+  padding: 2px 0;
+  resize: none;
+  overflow-y: auto;
+  min-height: 100px;
+  max-height: 200px;
 }
 
 #repl-input::placeholder {
   color: var(--repl-dim);
-}
-
-.history-indicator {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--repl-dim);
-  margin-left: 8px;
-  flex-shrink: 0;
 }
 
 /* ── Keyboard shortcut hints (tooltip) ─────────────────────── */

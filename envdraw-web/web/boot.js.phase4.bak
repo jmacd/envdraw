@@ -1,38 +1,16 @@
-// boot.js — JavaScript bootstrap for EnvDraw (Phase 5 — D3.js)
+// boot.js — JavaScript bootstrap for EnvDraw (Phase 4)
 // Loads the Hoot-compiled Wasm module and wires up all UI interactions.
 //
 // Provides:
-//   1. FFI imports (no-op canvas stubs, D3 graph-mutation functions, DOM, app callbacks)
+//   1. FFI imports (canvas with pan/zoom transforms, DOM, app callbacks)
 //   2. Event wiring (REPL, toolbar, resize, keyboard shortcuts)
-//   3. D3.js handles all pan/zoom/drag via d3-diagram.js
+//   3. Canvas pan/zoom with mouse drag + scroll wheel
 //   4. Resizable trace panel via drag handle
 //   5. Collapsible trace sidebar
 
 "use strict";
 
 // ─── State ─────────────────────────────────────────────────────────
-
-/** Convert a Hoot Wasm value to a JS string.
- *  Hoot heap objects (MutableString, Sym, etc.) have a repr() method
- *  that returns Scheme write-style text; their toString() returns opaque
- *  type tags like "#<mutable-string>".  For MutableString we extract the
- *  raw string value (like Scheme display); for other types we use repr(). */
-function schemeToString(val) {
-  if (val == null) return null;
-  if (typeof val === "string" || typeof val === "number" ||
-      typeof val === "boolean" || typeof val === "bigint") {
-    return String(val);
-  }
-  // MutableString: extract raw content via reflector.string_value
-  if (typeof val === "object" && val.reflector &&
-      typeof val.reflector.string_value === "function") {
-    try { return val.reflector.string_value(val); } catch (_) {}
-  }
-  if (typeof val === "object" && typeof val.repr === "function") {
-    return val.repr();
-  }
-  return String(val);
-}
 
 const callbacks = {
   eval: null,
@@ -47,43 +25,49 @@ const callbacks = {
 };
 
 const view = {
+  zoom: 1.0,
+  panX: 0,
+  panY: 0,
+  isPanning: false,
+  isDragging: false,
+  mouseStarted: false,
+  lastMouse: { x: 0, y: 0 },
+  startMouse: { x: 0, y: 0 },
   diagramExists: false,
 };
 
-// ─── Canvas / Context FFI (no-op stubs — Wasm still imports these) ─
-
-const _noop = () => {};
-const _noopRet0 = () => 0;
-const _noopRetNull = () => null;
+// ─── Canvas / Context FFI ──────────────────────────────────────────
 
 const ctxImports = {
-  setFillStyle: _noop,
-  setStrokeStyle: _noop,
-  setLineWidth: _noop,
-  fillRect: _noop,
-  strokeRect: _noop,
-  clearRect: _noop,
-  beginPath: _noop,
-  closePath: _noop,
-  moveTo: _noop,
-  lineTo: _noop,
-  arc: _noop,
-  ellipse: _noop,
-  stroke: _noop,
-  fill: _noop,
-  fillText: _noop,
-  setFont: _noop,
-  setTextAlign: _noop,
-  setTextBaseline: _noop,
-  measureTextWidth: _noopRet0,
-  save: _noop,
-  restore: _noop,
-  translate: _noop,
-  scale: _noop,
-  setGlobalAlpha: _noop,
-  setLineDash: _noop,
-  clearLineDash: _noop,
-  roundRect: _noop,
+  setFillStyle(ctx, style)    { ctx.fillStyle = style; },
+  setStrokeStyle(ctx, style)  { ctx.strokeStyle = style; },
+  setLineWidth(ctx, w)        { ctx.lineWidth = w; },
+  fillRect(ctx, x, y, w, h)  { ctx.fillRect(x, y, w, h); },
+  strokeRect(ctx, x, y, w, h){ ctx.strokeRect(x, y, w, h); },
+  clearRect(ctx, x, y, w, h) { ctx.clearRect(x, y, w, h); },
+  beginPath(ctx)              { ctx.beginPath(); },
+  closePath(ctx)              { ctx.closePath(); },
+  moveTo(ctx, x, y)          { ctx.moveTo(x, y); },
+  lineTo(ctx, x, y)          { ctx.lineTo(x, y); },
+  arc(ctx, x, y, r, s, e)    { ctx.arc(x, y, r, s, e); },
+  ellipse(ctx, x, y, rx, ry, rot, s, e) {
+    ctx.ellipse(x, y, rx, ry, rot, s, e);
+  },
+  stroke(ctx)                 { ctx.stroke(); },
+  fill(ctx)                   { ctx.fill(); },
+  fillText(ctx, text, x, y)  { ctx.fillText(text, x, y); },
+  setFont(ctx, font)          { ctx.font = font; },
+  setTextAlign(ctx, align)    { ctx.textAlign = align; },
+  setTextBaseline(ctx, bl)    { ctx.textBaseline = bl; },
+  measureTextWidth(ctx, text) { return ctx.measureText(text).width; },
+  save(ctx)                   { ctx.save(); },
+  restore(ctx)                { ctx.restore(); },
+  translate(ctx, x, y)        { ctx.translate(x, y); },
+  scale(ctx, sx, sy)          { ctx.scale(sx, sy); },
+  setGlobalAlpha(ctx, a)      { ctx.globalAlpha = a; },
+  setLineDash(ctx, seg1, seg2){ ctx.setLineDash([seg1, seg2]); },
+  clearLineDash(ctx)          { ctx.setLineDash([]); },
+  roundRect(ctx, x, y, w, h, r){ ctx.beginPath(); ctx.roundRect(x, y, w, h, r); },
 };
 
 // ─── App FFI ───────────────────────────────────────────────────────
@@ -101,7 +85,6 @@ const appImports = {
   registerGCHandler(fn)          { callbacks.gc = fn; },
 
   traceAppend(text) {
-    text = schemeToString(text) || '';
     const traceOutput = document.getElementById("trace-output");
     const line = document.createElement("div");
     line.className = "trace-line";
@@ -123,7 +106,6 @@ const appImports = {
   },
 
   setResultText(text) {
-    text = schemeToString(text) || '';
     const traceOutput = document.getElementById("trace-output");
     const line = document.createElement("div");
     line.className = "trace-line return-line";
@@ -135,40 +117,35 @@ const appImports = {
     hideEmptyState();
   },
 
-  getCanvasContext: _noopRetNull,
-  getCanvasWidth()  { return 800; },
-  getCanvasHeight() { return 600; },
+  getCanvasContext() {
+    const canvas = document.getElementById("diagram-canvas");
+    if (!canvas) return null;
+    const ctx = canvas.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    // Reset transform and clear the entire physical canvas
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // Set up rendering transform: DPR, then pan, then zoom
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.translate(view.panX, view.panY);
+    ctx.scale(view.zoom, view.zoom);
+    return ctx;
+  },
 
-  consoleLog(msg)   { console.log("[EnvDraw]", schemeToString(msg)); },
-  consoleError(msg) { console.error("[EnvDraw]", schemeToString(msg)); },
+  getCanvasWidth() {
+    const canvas = document.getElementById("diagram-canvas");
+    const dpr = window.devicePixelRatio || 1;
+    return canvas ? canvas.width / dpr / view.zoom : 800;
+  },
 
-  // ── D3 graph-mutation FFI (called from Scheme web-observer) ──
-  d3AddFrame(id, name, parentId, color) {
-    EnvDiagram.addFrame(schemeToString(id), schemeToString(name),
-                        schemeToString(parentId), schemeToString(color));
+  getCanvasHeight() {
+    const canvas = document.getElementById("diagram-canvas");
+    const dpr = window.devicePixelRatio || 1;
+    return canvas ? canvas.height / dpr / view.zoom : 600;
   },
-  d3AddProcedure(id, lambdaText, frameId, color) {
-    EnvDiagram.addProcedure(schemeToString(id), schemeToString(lambdaText),
-                            schemeToString(frameId), schemeToString(color));
-  },
-  d3AddBinding(frameId, varName, value, valueType, procId) {
-    EnvDiagram.addBinding(schemeToString(frameId), schemeToString(varName),
-                          schemeToString(value), schemeToString(valueType),
-                          schemeToString(procId));
-  },
-  d3UpdateBinding(frameId, varName, newValue, valueType) {
-    EnvDiagram.updateBinding(schemeToString(frameId), schemeToString(varName),
-                             schemeToString(newValue), schemeToString(valueType));
-  },
-  d3RemoveNode(id) {
-    EnvDiagram.removeNode(schemeToString(id));
-  },
-  d3RemoveEdge(fromId, toId) {
-    EnvDiagram.removeEdge(schemeToString(fromId), schemeToString(toId));
-  },
-  d3RequestRender() {
-    // D3 renders automatically; this is a no-op hint
-  },
+
+  consoleLog(msg)   { console.log("[EnvDraw]", msg); },
+  consoleError(msg) { console.error("[EnvDraw]", msg); },
 };
 
 // ─── UI Helpers ────────────────────────────────────────────────────
@@ -196,44 +173,201 @@ function showTracePanel() {
 
 function updateZoomLabel() {
   const label = document.getElementById("btn-zoom-reset");
-  const z = EnvDiagram.getZoom ? EnvDiagram.getZoom() : 1;
-  label.textContent = Math.round(z * 100) + "%";
+  label.textContent = Math.round(view.zoom * 100) + "%";
 }
 
 function requestRender() {
-  // D3 handles rendering; this is a compatibility no-op
+  if (callbacks.render) {
+    try { callbacks.render(); } catch (e) { console.error("render:", e); }
+  }
 }
 
-// ─── D3 Diagram Initialization ─────────────────────────────────────
+// ─── Canvas Resize ─────────────────────────────────────────────────
 
-function setupDiagram() {
-  const svgEl = document.getElementById("diagram-svg");
-  if (!svgEl) {
-    console.error("SVG element #diagram-svg not found");
-    return;
+function setupCanvasResize() {
+  const canvas = document.getElementById("diagram-canvas");
+  const container = document.getElementById("canvas-container");
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = container.getBoundingClientRect();
+    canvas.width  = rect.width  * dpr;
+    canvas.height = rect.height * dpr;
+    if (callbacks.resize) {
+      try { callbacks.resize(); } catch (e) { console.error("resize:", e); }
+    }
   }
-  EnvDiagram.init(svgEl);
 
-  // Wire zoom buttons to D3
+  const ro = new ResizeObserver(() => resize());
+  ro.observe(container);
+  resize();
+  return canvas;
+}
+
+// ─── Pan & Zoom ────────────────────────────────────────────────────
+
+/** Convert a client-space mouse position to scene coordinates */
+function clientToScene(clientX, clientY, canvas) {
+  const rect = canvas.getBoundingClientRect();
+  const cssX = clientX - rect.left;
+  const cssY = clientY - rect.top;
+  // Remove pan, then remove zoom
+  return {
+    x: (cssX - view.panX) / view.zoom,
+    y: (cssY - view.panY) / view.zoom,
+  };
+}
+
+function setupPanZoom() {
+  const canvas = document.getElementById("diagram-canvas");
+
+  // --- Mouse drag: pan OR node drag ---
+  canvas.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+
+    const scene = clientToScene(e.clientX, e.clientY, canvas);
+
+    // Ask Scheme if something is under the cursor.
+    // handle-mouse-down! returns #t (hit) or #f (miss).
+    let isDraggingNode = false;
+    if (callbacks.mouseDown) {
+      try {
+        const result = callbacks.mouseDown(scene.x, scene.y);
+        // Hoot returns Scheme booleans — #t is truthy, #f is false
+        isDraggingNode = !!result;
+      } catch (err) {
+        console.error("mouseDown:", err);
+      }
+    }
+
+    // Start tracking — drag if hit, else pan on first move
+    view.isDragging = isDraggingNode;
+    view.isPanning = false;
+    view.mouseStarted = true;
+    view.lastMouse = { x: e.clientX, y: e.clientY };
+    view.startMouse = { x: e.clientX, y: e.clientY };
+  });
+
+  window.addEventListener("mousemove", (e) => {
+    if (!view.mouseStarted) return;
+    const dx = e.clientX - view.lastMouse.x;
+    const dy = e.clientY - view.lastMouse.y;
+
+    if (view.isDragging && callbacks.mouseMove) {
+      // Node drag mode — pass scene coordinates to Scheme
+      const canvas = document.getElementById("diagram-canvas");
+      const scene = clientToScene(e.clientX, e.clientY, canvas);
+      try {
+        callbacks.mouseMove(scene.x, scene.y);
+      } catch (err) {
+        console.error("mouseMove:", err);
+      }
+      canvas.classList.add("dragging");
+    } else {
+      // Pan mode — after small threshold to avoid accidental pans on click
+      const totalDx = e.clientX - view.startMouse.x;
+      const totalDy = e.clientY - view.startMouse.y;
+      if (!view.isPanning && (totalDx * totalDx + totalDy * totalDy) > 9) {
+        view.isPanning = true;
+        view.isDragging = false;
+        // Tell Scheme to cancel any drag
+        if (callbacks.mouseUp) {
+          try { callbacks.mouseUp(0, 0); } catch (_) {}
+        }
+      }
+      if (view.isPanning) {
+        view.panX += dx;
+        view.panY += dy;
+        const canvas = document.getElementById("diagram-canvas");
+        canvas.classList.add("panning");
+        requestRender();
+      }
+    }
+    view.lastMouse = { x: e.clientX, y: e.clientY };
+  });
+
+  window.addEventListener("mouseup", (e) => {
+    if (!view.mouseStarted) return;
+    view.mouseStarted = false;
+
+    if (view.isDragging && callbacks.mouseUp) {
+      const canvas = document.getElementById("diagram-canvas");
+      const scene = clientToScene(e.clientX, e.clientY, canvas);
+      try { callbacks.mouseUp(scene.x, scene.y); } catch (err) {
+        console.error("mouseUp:", err);
+      }
+    }
+    view.isPanning = false;
+    view.isDragging = false;
+    const canvas = document.getElementById("diagram-canvas");
+    canvas.classList.remove("panning");
+    canvas.classList.remove("dragging");
+  });
+
+  // --- Scroll wheel for zoom ---
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    // Zoom factor
+    const delta = -e.deltaY * 0.001;
+    const factor = Math.exp(delta);
+    const newZoom = Math.min(5, Math.max(0.1, view.zoom * factor));
+    const ratio = newZoom / view.zoom;
+
+    // Zoom centered on mouse position
+    view.panX = mx - ratio * (mx - view.panX);
+    view.panY = my - ratio * (my - view.panY);
+    view.zoom = newZoom;
+
+    updateZoomLabel();
+    requestRender();
+  }, { passive: false });
+
+  // --- Zoom buttons ---
   document.getElementById("btn-zoom-in").addEventListener("click", () => {
-    EnvDiagram.zoomBy(1.25);
-    setTimeout(updateZoomLabel, 250);  // after D3 transition
+    zoomBy(1.25);
   });
 
   document.getElementById("btn-zoom-out").addEventListener("click", () => {
-    EnvDiagram.zoomBy(0.8);
-    setTimeout(updateZoomLabel, 250);
+    zoomBy(0.8);
   });
 
   document.getElementById("btn-zoom-reset").addEventListener("click", () => {
-    EnvDiagram.resetView();
-    setTimeout(updateZoomLabel, 350);
+    view.zoom = 1.0;
+    view.panX = 0;
+    view.panY = 0;
+    updateZoomLabel();
+    requestRender();
   });
 
   document.getElementById("btn-fit").addEventListener("click", () => {
-    EnvDiagram.fitToView();
-    setTimeout(updateZoomLabel, 510);  // after fit animation completes
+    // Reset to origin — a smarter version would compute bounding box
+    view.zoom = 1.0;
+    view.panX = 20;
+    view.panY = 20;
+    updateZoomLabel();
+    requestRender();
   });
+}
+
+function zoomBy(factor) {
+  const container = document.getElementById("canvas-container");
+  const rect = container.getBoundingClientRect();
+  const cx = rect.width / 2;
+  const cy = rect.height / 2;
+
+  const newZoom = Math.min(5, Math.max(0.1, view.zoom * factor));
+  const ratio = newZoom / view.zoom;
+  view.panX = cx - ratio * (cx - view.panX);
+  view.panY = cy - ratio * (cy - view.panY);
+  view.zoom = newZoom;
+
+  updateZoomLabel();
+  requestRender();
 }
 
 // ─── Resizable Trace Panel ─────────────────────────────────────────
@@ -279,180 +413,55 @@ function wireEvents() {
   const btnClear = document.getElementById("btn-clear");
   const btnToggleTrace = document.getElementById("btn-toggle-trace");
   const btnClearTrace = document.getElementById("btn-clear-trace");
-  const replLog = document.getElementById("repl-log");
-  const lineNumGutter = document.getElementById("input-line-nums");
+  const historyEl = document.getElementById("history-pos");
 
   const history = [];
   let historyIndex = -1;
-  let replLineNumber = 1;
-
-  /** Check whether parentheses/brackets/strings are balanced */
-  function isExpressionComplete(text) {
-    let depth = 0;
-    let inString = false;
-    let escape = false;
-    let inComment = false;
-    for (const ch of text) {
-      if (inComment) {
-        if (ch === '\n') inComment = false;
-        continue;
-      }
-      if (escape) { escape = false; continue; }
-      if (ch === '\\' && inString) { escape = true; continue; }
-      if (ch === '"') { inString = !inString; continue; }
-      if (inString) continue;
-      if (ch === ';') { inComment = true; continue; }
-      if (ch === '(') depth++;
-      if (ch === ')') depth--;
-    }
-    // Balanced (or more closes): depth ≤ 0; but also require non-empty
-    return depth <= 0;
-  }
-
-  /** Auto-resize the textarea to fit its content */
-  function autoResizeInput() {
-    replInput.style.height = '0';
-    replInput.style.height = Math.min(replInput.scrollHeight, 200) + 'px';
-  }
-
-  /** Update the line-number gutter beside the textarea */
-  function updateLineNumGutter() {
-    const lines = replInput.value.split('\n');
-    const numLines = lines.length;
-    let html = '';
-    for (let i = 0; i < numLines; i++) {
-      html += '<span>' + (replLineNumber + i) + '</span>';
-    }
-    lineNumGutter.innerHTML = html;
-  }
-
-  /** Append an entry to the REPL history log (supports multi-line) */
-  function addToReplLog(startLine, inputText, resultText, isError) {
-    const lines = inputText.split('\n');
-    const block = document.createElement("div");
-    block.className = "repl-log-block";
-
-    lines.forEach((line, i) => {
-      const row = document.createElement("div");
-      row.className = "repl-log-line";
-
-      const numSpan = document.createElement("span");
-      numSpan.className = "line-num";
-      numSpan.textContent = startLine + i;
-      row.appendChild(numSpan);
-
-      const inputSpan = document.createElement("span");
-      inputSpan.className = "line-input";
-      inputSpan.textContent = line;
-      row.appendChild(inputSpan);
-
-      block.appendChild(row);
-    });
-
-    // Result/error on its own line below the input
-    if (resultText != null) {
-      const resRow = document.createElement("div");
-      resRow.className = "repl-log-line";
-      const resSpan = document.createElement("span");
-      resSpan.className = isError ? "line-error" : "line-result";
-      resSpan.textContent = isError ? resultText : "⇒ " + resultText;
-      resRow.appendChild(resSpan);
-      block.appendChild(resRow);
-    }
-
-    replLog.appendChild(block);
-    replLog.scrollTop = replLog.scrollHeight;
-  }
-
-  // Export for tests
-  window._replLineNumber = () => replLineNumber;
-
-  // Auto-resize on input and update line numbers
-  replInput.addEventListener("input", () => {
-    autoResizeInput();
-    updateLineNumGutter();
-  });
-
-  // Keep line-number gutter scroll in sync with textarea
-  replInput.addEventListener("scroll", () => {
-    lineNumGutter.scrollTop = replInput.scrollTop;
-  });
 
   // ── REPL ──
   replInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
-      // Shift+Enter: always insert newline (let default happen)
-      if (e.shiftKey) return;
-
-      const text = replInput.value.trim();
-      if (!text) { e.preventDefault(); return; }
-
-      // If expression is incomplete (unbalanced parens), insert newline
-      if (!isExpressionComplete(text)) return;
-
-      // Expression complete — submit
       e.preventDefault();
-      const fullText = replInput.value.trimEnd();
-      const inputLines = fullText.split('\n');
-      const numLines = inputLines.length;
-      const thisLine = replLineNumber;
+      const text = replInput.value.trim();
+      if (!text) return;
 
-      history.unshift(fullText);
+      history.unshift(text);
       historyIndex = -1;
+      historyEl.textContent = "";
 
-      appImports.traceAppend("EnvDraw> " + fullText);
+      appImports.traceAppend("EnvDraw> " + text);
       replInput.value = "";
-      autoResizeInput();
-      updateLineNumGutter();
 
       hideEmptyState();
       setStatus("Evaluating…", "busy");
 
-      let resultText = null;
-      let isError = false;
       if (callbacks.eval) {
         try {
-          const res = callbacks.eval(fullText);
-          resultText = schemeToString(res);
+          callbacks.eval(text);
           setStatus("Ready", "ready");
         } catch (err) {
           console.error("eval error:", err);
-          resultText = err.message || "unknown error";
-          isError = true;
           appImports.traceAppend("*** Error: " + err.message);
           setStatus("Error", "error");
         }
       }
-
-      addToReplLog(thisLine, fullText, resultText, isError);
-      replLineNumber += numLines;
-      updateLineNumGutter();
     } else if (e.key === "ArrowUp") {
-      // Only navigate history if cursor is at the very start
-      if (replInput.selectionStart === 0 && replInput.selectionEnd === 0) {
-        e.preventDefault();
-        if (historyIndex < history.length - 1) {
-          historyIndex++;
-          replInput.value = history[historyIndex];
-          autoResizeInput();
-          updateLineNumGutter();
-        }
+      e.preventDefault();
+      if (historyIndex < history.length - 1) {
+        historyIndex++;
+        replInput.value = history[historyIndex];
+        historyEl.textContent = (historyIndex + 1) + "/" + history.length;
       }
     } else if (e.key === "ArrowDown") {
-      // Only navigate history if cursor is at the very end
-      if (replInput.selectionEnd === replInput.value.length) {
-        e.preventDefault();
-        if (historyIndex > 0) {
-          historyIndex--;
-          replInput.value = history[historyIndex];
-          autoResizeInput();
-          updateLineNumGutter();
-        } else if (historyIndex === 0) {
-          historyIndex = -1;
-          replInput.value = "";
-          autoResizeInput();
-          updateLineNumGutter();
-        }
+      e.preventDefault();
+      if (historyIndex > 0) {
+        historyIndex--;
+        replInput.value = history[historyIndex];
+        historyEl.textContent = (historyIndex + 1) + "/" + history.length;
+      } else if (historyIndex === 0) {
+        historyIndex = -1;
+        replInput.value = "";
+        historyEl.textContent = "";
       }
     }
   });
@@ -484,15 +493,14 @@ function wireEvents() {
 
   btnClear.addEventListener("click", () => {
     document.getElementById("trace-output").innerHTML = "";
-    // Clear REPL log and reset line counter
-    replLog.innerHTML = "";
-    replLineNumber = 1;
-    updateLineNumGutter();
-    // Clear D3 diagram
-    EnvDiagram.clear();
+    // Reset view
+    view.zoom = 1.0;
+    view.panX = 0;
+    view.panY = 0;
     view.diagramExists = false;
     updateZoomLabel();
     document.getElementById("empty-state").classList.remove("hidden");
+    requestRender();
   });
 
   // ── Trace panel toggle ──
@@ -531,20 +539,14 @@ function wireEvents() {
       btnToggleTrace.click();
     } else if (e.key === "0" && !e.ctrlKey && !e.metaKey && document.activeElement !== replInput) {
       e.preventDefault();
-      EnvDiagram.resetView();
-      setTimeout(updateZoomLabel, 350);
+      view.zoom = 1.0; view.panX = 0; view.panY = 0;
+      updateZoomLabel(); requestRender();
     } else if (e.key === "=" && !e.ctrlKey && !e.metaKey && document.activeElement !== replInput) {
       e.preventDefault();
-      EnvDiagram.zoomBy(1.25);
-      setTimeout(updateZoomLabel, 250);
+      zoomBy(1.25);
     } else if (e.key === "-" && !e.ctrlKey && !e.metaKey && document.activeElement !== replInput) {
       e.preventDefault();
-      EnvDiagram.zoomBy(0.8);
-      setTimeout(updateZoomLabel, 250);
-    } else if (e.key === "f" && !e.ctrlKey && !e.metaKey && document.activeElement !== replInput) {
-      e.preventDefault();
-      EnvDiagram.fitToView();
-      setTimeout(updateZoomLabel, 510);
+      zoomBy(0.8);
     } else if (e.key === "/" && document.activeElement !== replInput) {
       e.preventDefault();
       replInput.focus();
@@ -558,7 +560,8 @@ function wireEvents() {
 
 async function boot() {
   setStatus("Loading…", "busy");
-  setupDiagram();
+  setupCanvasResize();
+  setupPanZoom();
   setupResizeHandle();
 
   try {

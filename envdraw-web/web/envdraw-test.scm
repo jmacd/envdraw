@@ -287,9 +287,7 @@
 
 (define (test-boot!)
   (console-log "boot: start")
-  (let* ((root (make-group-node 0 0)))
-    (console-log "boot: root created")
-    (let* ((obs (make-web-observer root)))
+  (let* ((obs (make-web-observer)))
       (console-log "boot: observer created")
       (let* ((eval-fn (envdraw-init obs)))
         (console-log "boot: envdraw-init done")
@@ -314,7 +312,7 @@
               (console-log "render called"))))
           (console-log "boot: render handler registered")
           
-          (console-log "boot: ALL DONE"))))))
+          (console-log "boot: ALL DONE")))))
 
 (console-log "phase 16: boot! defined")
 

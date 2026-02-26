@@ -64,10 +64,10 @@
       </div>
 
       <!-- Resize handle -->
-      <div id="resize-handle" title="Drag to resize trace panel"></div>
+      <div id="resize-handle" class="hidden" title="Drag to resize trace panel"></div>
 
-      <!-- Trace sidebar (right side, collapsible) -->
-      <aside id="trace-panel">
+      <!-- Trace sidebar (right side, collapsible — starts closed) -->
+      <aside id="trace-panel" class="collapsed">
         <div class="trace-header">
           <span class="trace-title">Trace</span>
           <button id="btn-clear-trace" class="trace-btn" title="Clear trace">✕</button>
@@ -78,11 +78,14 @@
 
     <!-- REPL -->
     <div id="repl-area">
-      <span class="prompt">EnvDraw&gt;</span>
-      <input type="text" id="repl-input" autofocus
-             placeholder="Type a Scheme expression…"
-             spellcheck="false" autocomplete="off">
-      <span id="history-pos" class="history-indicator"></span>
+      <div id="repl-log"></div>
+      <div id="repl-input-row">
+        <div id="input-line-nums"><span>1</span></div>
+        <span class="prompt">&gt;</span>
+        <textarea id="repl-input" rows="5" autofocus
+                  placeholder="Type a Scheme expression… (Shift+Enter for newline)"
+                  spellcheck="false" autocomplete="off"></textarea>
+      </div>
     </div>
 
   </div>
@@ -91,7 +94,7 @@
   <script>
     // Cache-bust boot.js — bump version when boot.js changes
     const s = document.createElement("script");
-    s.src = "boot.js?v=3";
+    s.src = "boot.js?v=9";
     document.body.appendChild(s);
   </script>
 </body>

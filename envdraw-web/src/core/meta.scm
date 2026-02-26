@@ -23,10 +23,11 @@
 ;;; before any code references them.
 
 (define-record-type <procedure-info>
-  (make-procedure-info id frame)
+  (make-procedure-info id frame source-line)
   procedure-info?
-  (id    procedure-info-id)
-  (frame procedure-info-frame))
+  (id          procedure-info-id)
+  (frame       procedure-info-frame)
+  (source-line procedure-info-source-line))
 
 ;;; Set the late-bound callback used by environments.scm to extract
 ;;; the scene-graph node ID from a compound procedure value.
@@ -181,6 +182,14 @@
 ;;; Current eval trace indent level
 (define *eval-indent-level* 0)
 
+;;; Current REPL line number (advanced by number of input lines)
+(define *current-repl-line* 0)
+
+;;; Lambda source-line queue: ordered list of absolute line numbers
+;;; where (lambda or (define ( appears in the current REPL input.
+;;; Consumed by make-procedure during evaluation.
+(define *lambda-line-queue* '())
+
 ;;; Stepping control
 (define view:confirmation #f)
 (define view:continue #f)
@@ -188,6 +197,82 @@
 
 ;;; The current observer (set at startup)
 (define *meta-observer* #f)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;               SOURCE-LINE SCANNING HELPERS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;; Check whether str contains prefix starting at position pos.
+(define (string-match-at? str prefix pos)
+  (let ((plen (string-length prefix))
+        (slen (string-length str)))
+    (and (<= (+ pos plen) slen)
+         (let check ((j 0))
+           (or (>= j plen)
+               (and (char=? (string-ref str (+ pos j))
+                            (string-ref prefix j))
+                    (check (+ j 1))))))))
+
+;;; Count newlines in a string.
+(define (count-newlines str)
+  (let ((len (string-length str)))
+    (let loop ((i 0) (n 0))
+      (if (>= i len)
+          n
+          (loop (+ i 1)
+                (if (char=? (string-ref str i) #\newline)
+                    (+ n 1) n))))))
+
+;;; Scan source text for (lambda and (define ( occurrences.
+;;; Returns an ordered list of absolute line numbers (ascending).
+;;; Skips occurrences inside string literals and comments.
+(define (scan-lambda-lines source-text start-line)
+  (let ((len (string-length source-text)))
+    (let loop ((i 0) (line-offset 0) (in-string #f) (escape #f)
+               (result '()))
+      (if (>= i len)
+          (reverse result)
+          (let ((ch (string-ref source-text i)))
+            (cond
+              ;; After backslash in string — skip one char
+              (escape
+               (loop (+ i 1) line-offset in-string #f result))
+              ;; Backslash inside string
+              ((and in-string (char=? ch #\\))
+               (loop (+ i 1) line-offset #t #t result))
+              ;; Quote toggles string mode
+              ((char=? ch #\")
+               (loop (+ i 1) line-offset (not in-string) #f result))
+              ;; Inside string — just advance
+              (in-string
+               (if (char=? ch #\newline)
+                   (loop (+ i 1) (+ line-offset 1) #t #f result)
+                   (loop (+ i 1) line-offset #t #f result)))
+              ;; Newline
+              ((char=? ch #\newline)
+               (loop (+ i 1) (+ line-offset 1) #f #f result))
+              ;; Semicolon — skip to end of line (comment)
+              ((char=? ch #\;)
+               (let skip ((j (+ i 1)))
+                 (if (or (>= j len)
+                         (char=? (string-ref source-text j) #\newline))
+                     (loop j line-offset #f #f result)
+                     (skip (+ j 1)))))
+              ;; Open paren — check for (lambda or (define (
+              ((char=? ch #\()
+               (let ((abs-line (+ start-line line-offset)))
+                 (cond
+                   ((string-match-at? source-text "(lambda" i)
+                    (loop (+ i 7) line-offset #f #f
+                          (cons abs-line result)))
+                   ((string-match-at? source-text "(define (" i)
+                    (loop (+ i 9) line-offset #f #f
+                          (cons abs-line result)))
+                   (else
+                    (loop (+ i 1) line-offset #f #f result)))))
+              ;; Anything else
+              (else
+               (loop (+ i 1) line-offset #f #f result))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;                         SPECIAL FORMS
@@ -337,21 +422,29 @@
          (after-eval
           (apply (lazy-deextern procedure) (map lazy-deextern arguments))))
         ((compound-procedure? procedure)
-         (let* ((apply-env (procedure-environment procedure)))
+         (let* ((apply-env (procedure-environment procedure))
+                (src-line (procedure-info-source-line
+                           (procedure-info-of procedure)))
+                (frame-name (if (> src-line 0)
+                                (string-append
+                                 "L" (number->string src-line))
+                                (string-append
+                                 "E" (number->string
+                                      *next-environment-number*)))))
            (wait-for-confirmation
             (string-append
              "APPLY " (viewed-rep procedure)
              " args: "
              (format-sexp (map (lambda (x)
                                  (viewed-rep (safen-list x))) arguments))
-             ", making new E"
-             (number->string *next-environment-number*)
+             ", making new " frame-name
              "."))
            (eval-sequence (env-procedure-body procedure)
                           (extend-environment
                            (parameters procedure)
                            arguments
-                           apply-env))))
+                           apply-env
+                           ':name frame-name))))
         (else (error "Unknown procedure type -- apply" procedure))))
 
 (define (lazy-deextern x)
@@ -467,7 +560,13 @@
                (format-sexp clean-exp)
                (frame-info-id fi))
               "proc-anon"))
-         (pi (make-procedure-info proc-id fi))
+         ;; Pop source line from the lambda-line queue if available
+         (src-line (if (pair? *lambda-line-queue*)
+                       (let ((ln (car *lambda-line-queue*)))
+                         (set! *lambda-line-queue* (cdr *lambda-line-queue*))
+                         ln)
+                       *current-repl-line*))
+         (pi (make-procedure-info proc-id fi src-line))
          (it (list pi lambda-exp env)))
     (when *meta-observer*
       ((observer-on-request-render *meta-observer*)))
@@ -648,6 +747,8 @@
   (set! the-eval-stack (make-stack))
   (set! last-error-stack #f)
   (set! *eval-indent-level* 0)
+  (set! *current-repl-line* 0)
+  (set! *lambda-line-queue* '())
   (set! *next-environment-number* 1)
   (set! view:confirmation #f)
   (set! view:continue #f)
@@ -660,12 +761,22 @@
 (define (envdraw-eval-one input-string)
   (stack-empty! the-eval-stack)
   (set! *eval-indent-level* 0)
-  (set! view:continue (not view:use-stepping?))
-  (let ((input (read (open-input-string input-string))))
-    (if (eof-object? input)
-        ""
-        (let ((result (view-eval input the-global-environment)))
-          (viewed-rep result)))))
+  (let* ((num-input-lines (+ 1 (count-newlines input-string)))
+         (start-line (+ 1 *current-repl-line*)))
+    ;; Set current line to the start of this input
+    (set! *current-repl-line* start-line)
+    ;; Scan source for lambda/define positions
+    (set! *lambda-line-queue*
+          (scan-lambda-lines input-string start-line))
+    (set! view:continue (not view:use-stepping?))
+    (let ((input (read (open-input-string input-string))))
+      ;; Advance past all input lines
+      (set! *current-repl-line*
+            (+ start-line (- num-input-lines 1)))
+      (if (eof-object? input)
+          ""
+          (let ((result (view-eval input the-global-environment)))
+            (viewed-rep result))))))
 
 ;;; Stepping controls (called from UI buttons)
 (define (env-step)

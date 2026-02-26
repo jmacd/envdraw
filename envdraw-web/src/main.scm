@@ -41,27 +41,15 @@
 ;;; Core data structures (no dependencies)
 (load-relative "core/stacks.scm")
 
-;;; Model layer (depends on nothing external)
-(load-relative "model/math.scm")
+;;; Model layer (color still used by web-observer)
 (load-relative "model/color.scm")
 
 ;;; Canvas FFI stubs (for native testing; replaced by define-foreign in Wasm)
 (load-relative "render/canvas-ffi.scm")
 
-;;; Scene graph (depends on color)
-(load-relative "model/scene-graph.scm")
-
-;;; Profiles — cons-cell size computation (depends on math)
-(load-relative "model/profiles.scm")
-
-;;; Placement — convex-hull positioning (depends on math, stacks)
-(load-relative "model/placement.scm")
-
-;;; Pointer routing — polyline geometry (depends on math, profiles)
-(load-relative "model/pointers.scm")
-
-;;; Renderer (depends on canvas-ffi, scene-graph)
-(load-relative "render/renderer.scm")
+;;; NOTE: Phase 5 — D3.js handles all layout and rendering.
+;;; Removed: math.scm, scene-graph.scm, profiles.scm, placement.scm,
+;;;          pointers.scm, renderer.scm
 
 ;;; Observer interface (depends on nothing)
 (load-relative "core/eval-observer.scm")
@@ -69,7 +57,7 @@
 ;;; D3 FFI stubs (for native testing; replaced by define-foreign in Wasm)
 (load-relative "render/d3-ffi-stubs.scm")
 
-;;; Web observer (depends on scene-graph, renderer, eval-observer, color)
+;;; Web observer (depends on eval-observer, color, d3-ffi)
 (load-relative "ui/web-observer.scm")
 
 ;;; Environment manipulation (depends on eval-observer)
@@ -87,10 +75,8 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define (envdraw-start)
-  ;; Create the scene graph root
-  (let* ((root (make-group-node 0 0))
-         ;; Create the web observer
-         (obs (make-web-observer root))
+  ;; Create observer and evaluator — D3 handles visualization
+  (let* ((obs (make-web-observer))
          ;; Initialize the evaluator
          (eval-one (envdraw-init obs)))
 
