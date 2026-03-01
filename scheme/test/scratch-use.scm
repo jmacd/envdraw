@@ -1,7 +1,0 @@
-(define (foo-user)
-  (let ((f (make-foo 42)))
-    (display (foo-x f))
-    (newline)
-    (display "procedure? foo-x => ")
-    (display (procedure? foo-x))
-    (newline)))

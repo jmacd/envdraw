@@ -1,6 +1,0 @@
-node_modules/
-test/screenshot-*.png
-*.wasm
-!web/reflect.wasm
-!web/wtf8.wasm
-package-lock.json
