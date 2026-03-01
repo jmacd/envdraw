@@ -1,0 +1,85 @@
+# Deploy EnvDraw to GitHub Pages
+#
+# - On push to main: deploys envdraw-web/web/ to GitHub Pages.
+# - On pull request to main: validates the site builds correctly.
+# - Manual trigger via workflow_dispatch.
+
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "envdraw-web/web/**"
+      - ".github/workflows/deploy-pages.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "envdraw-web/web/**"
+      - ".github/workflows/deploy-pages.yml"
+  workflow_dispatch:  # allows manual trigger from Actions tab
+
+# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  # ── Validate ──────────────────────────────────────────────────────
+  # Runs on every PR and push: checks that required files exist and
+  # the HTML is well-formed enough to serve.
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify required files exist
+        run: |
+          echo "Checking required site files..."
+          for f in index.html boot.js reflect.js d3-diagram.js style.css \
+                   reflect.wasm wtf8.wasm envdraw.wasm; do
+            if [ ! -f "envdraw-web/web/$f" ]; then
+              echo "ERROR: missing envdraw-web/web/$f"
+              exit 1
+            fi
+          done
+          echo "All required files present."
+
+      - name: Check HTML validity (basic)
+        run: |
+          # Ensure index.html has opening and closing tags
+          grep -q '<html' envdraw-web/web/index.html
+          grep -q '</html>' envdraw-web/web/index.html
+          echo "HTML looks valid."
+
+  # ── Deploy ────────────────────────────────────────────────────────
+  # Only runs on push to main (not on PRs).
+  deploy:
+    needs: validate
+    if: github.event_name != 'pull_request'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: envdraw-web/web
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
