@@ -50,6 +50,38 @@ const view = {
   diagramExists: false,
 };
 
+// ─── Stepping State ───────────────────────────────────────────────
+// Stepping is implemented via record-and-replay: evaluation runs to
+// completion synchronously, but when stepping is enabled, all D3
+// mutations and trace output are recorded into step groups (bounded
+// by wait-for-confirmation calls in the evaluator).  The Step button
+// replays one group at a time; Continue replays all remaining groups.
+
+const stepping = {
+  active: false,        // stepping checkbox is checked
+  queueing: false,      // currently recording steps during eval
+  suspended: false,     // evaluation done, steps pending replay
+  queue: [],            // array of fn[] (each fn[] is one step's operations)
+  currentOps: [],       // accumulating current step's operations
+  boundariesSeen: 0,    // count of step boundaries in current eval
+  pendingResult: null,  // {thisLine, fullText, resultText, isError, numLines}
+};
+
+/** Push accumulated operations as a completed step group. */
+function finalizeCurrentStep() {
+  if (stepping.currentOps.length > 0) {
+    stepping.queue.push([...stepping.currentOps]);
+    stepping.currentOps = [];
+  }
+}
+
+/** Apply all queued step groups immediately (used on error or no boundaries). */
+function flushStepQueue() {
+  for (const ops of stepping.queue) for (const op of ops) op();
+  stepping.queue = [];
+  stepping.currentOps = [];
+}
+
 // ─── Canvas / Context FFI (no-op stubs — Wasm still imports these) ─
 
 const _noop = () => {};
@@ -102,37 +134,20 @@ const appImports = {
 
   traceAppend(text) {
     text = schemeToString(text) || '';
-    const traceOutput = document.getElementById("trace-output");
-    const line = document.createElement("div");
-    line.className = "trace-line";
-
-    if (text.startsWith("EnvDraw>")) line.classList.add("input-line");
-    else if (text.includes("EVAL in"))   line.classList.add("eval-line");
-    else if (text.includes("RETURNING")) line.classList.add("return-line");
-    else if (text.includes("Error") || text.includes("***")) line.classList.add("error-line");
-    else line.classList.add("info-line");
-
-    line.textContent = text;
-    traceOutput.appendChild(line);
-    traceOutput.scrollTop = traceOutput.scrollHeight;
-
-    // Show trace panel if it's collapsed and there's an error
-    if (text.includes("Error") || text.includes("***")) {
-      showTracePanel();
+    if (stepping.queueing) {
+      stepping.currentOps.push(() => realTraceAppend(text));
+      return;
     }
+    realTraceAppend(text);
   },
 
   setResultText(text) {
     text = schemeToString(text) || '';
-    const traceOutput = document.getElementById("trace-output");
-    const line = document.createElement("div");
-    line.className = "trace-line return-line";
-    line.textContent = "⇒ " + text;
-    traceOutput.appendChild(line);
-    traceOutput.scrollTop = traceOutput.scrollHeight;
-
-    // First result means diagram exists — hide empty state
-    hideEmptyState();
+    if (stepping.queueing) {
+      stepping.currentOps.push(() => realSetResultText(text));
+      return;
+    }
+    realSetResultText(text);
   },
 
   getCanvasContext: _noopRetNull,
@@ -143,31 +158,74 @@ const appImports = {
   consoleError(msg) { console.error("[EnvDraw]", schemeToString(msg)); },
 
   // ── D3 graph-mutation FFI (called from Scheme web-observer) ──
+  // When stepping is active during eval, mutations are queued as closures
+  // and replayed one step group at a time when the user clicks Step.
   d3AddFrame(id, name, parentId, color) {
-    EnvDiagram.addFrame(schemeToString(id), schemeToString(name),
-                        schemeToString(parentId), schemeToString(color));
+    const a = schemeToString(id), b = schemeToString(name),
+          c = schemeToString(parentId), d = schemeToString(color);
+    if (stepping.queueing) { stepping.currentOps.push(() => EnvDiagram.addFrame(a, b, c, d)); return; }
+    EnvDiagram.addFrame(a, b, c, d);
   },
   d3AddProcedure(id, lambdaText, frameId, color) {
-    EnvDiagram.addProcedure(schemeToString(id), schemeToString(lambdaText),
-                            schemeToString(frameId), schemeToString(color));
+    const a = schemeToString(id), b = schemeToString(lambdaText),
+          c = schemeToString(frameId), d = schemeToString(color);
+    if (stepping.queueing) { stepping.currentOps.push(() => EnvDiagram.addProcedure(a, b, c, d)); return; }
+    EnvDiagram.addProcedure(a, b, c, d);
   },
   d3AddBinding(frameId, varName, value, valueType, procId) {
-    EnvDiagram.addBinding(schemeToString(frameId), schemeToString(varName),
-                          schemeToString(value), schemeToString(valueType),
-                          schemeToString(procId));
+    const a = schemeToString(frameId), b = schemeToString(varName),
+          c = schemeToString(value), d = schemeToString(valueType),
+          e = schemeToString(procId);
+    if (stepping.queueing) { stepping.currentOps.push(() => EnvDiagram.addBinding(a, b, c, d, e)); return; }
+    EnvDiagram.addBinding(a, b, c, d, e);
   },
   d3UpdateBinding(frameId, varName, newValue, valueType) {
-    EnvDiagram.updateBinding(schemeToString(frameId), schemeToString(varName),
-                             schemeToString(newValue), schemeToString(valueType));
+    const a = schemeToString(frameId), b = schemeToString(varName),
+          c = schemeToString(newValue), d = schemeToString(valueType);
+    if (stepping.queueing) { stepping.currentOps.push(() => EnvDiagram.updateBinding(a, b, c, d)); return; }
+    EnvDiagram.updateBinding(a, b, c, d);
   },
   d3RemoveNode(id) {
-    EnvDiagram.removeNode(schemeToString(id));
+    const a = schemeToString(id);
+    if (stepping.queueing) { stepping.currentOps.push(() => EnvDiagram.removeNode(a)); return; }
+    EnvDiagram.removeNode(a);
   },
   d3RemoveEdge(fromId, toId) {
-    EnvDiagram.removeEdge(schemeToString(fromId), schemeToString(toId));
+    const a = schemeToString(fromId), b = schemeToString(toId);
+    if (stepping.queueing) { stepping.currentOps.push(() => EnvDiagram.removeEdge(a, b)); return; }
+    EnvDiagram.removeEdge(a, b);
+  },
+  d3AddPair(id, carLabel, cdrLabel) {
+    const a = schemeToString(id), b = schemeToString(carLabel),
+          c = schemeToString(cdrLabel);
+    if (stepping.queueing) { stepping.currentOps.push(() => EnvDiagram.addPair(a, b, c)); return; }
+    EnvDiagram.addPair(a, b, c);
+  },
+  d3AddPairEdge(fromId, toId, edgeType) {
+    const a = schemeToString(fromId), b = schemeToString(toId),
+          c = schemeToString(edgeType);
+    if (stepping.queueing) { stepping.currentOps.push(() => EnvDiagram.addPairEdge(a, b, c)); return; }
+    EnvDiagram.addPairEdge(a, b, c);
+  },
+  d3AddPairAtom(id, label) {
+    const a = schemeToString(id), b = schemeToString(label);
+    if (stepping.queueing) { stepping.currentOps.push(() => EnvDiagram.addPairAtom(a, b)); return; }
+    EnvDiagram.addPairAtom(a, b);
+  },
+  d3AddPairNull(id) {
+    const a = schemeToString(id);
+    if (stepping.queueing) { stepping.currentOps.push(() => EnvDiagram.addPairNull(a)); return; }
+    EnvDiagram.addPairNull(a);
   },
   d3RequestRender() {
-    // D3 renders automatically; this is a no-op hint
+    if (stepping.queueing) return;
+  },
+  /** Called from Scheme when wait-for-confirmation fires (at each apply). */
+  notifyStepBoundary() {
+    if (stepping.queueing) {
+      stepping.boundariesSeen++;
+      finalizeCurrentStep();
+    }
   },
 };
 
@@ -192,6 +250,38 @@ function showTracePanel() {
   const handle = document.getElementById("resize-handle");
   panel.classList.remove("collapsed");
   handle.classList.remove("hidden");
+}
+
+/** Append a line to the trace panel (bypasses step queue). */
+function realTraceAppend(text) {
+  const traceOutput = document.getElementById("trace-output");
+  const line = document.createElement("div");
+  line.className = "trace-line";
+
+  if (text.startsWith("EnvDraw>")) line.classList.add("input-line");
+  else if (text.includes("EVAL in"))   line.classList.add("eval-line");
+  else if (text.includes("RETURNING")) line.classList.add("return-line");
+  else if (text.includes("Error") || text.includes("***")) line.classList.add("error-line");
+  else line.classList.add("info-line");
+
+  line.textContent = text;
+  traceOutput.appendChild(line);
+  traceOutput.scrollTop = traceOutput.scrollHeight;
+
+  if (text.includes("Error") || text.includes("***")) {
+    showTracePanel();
+  }
+}
+
+/** Show a result line in the trace panel (bypasses step queue). */
+function realSetResultText(text) {
+  const traceOutput = document.getElementById("trace-output");
+  const line = document.createElement("div");
+  line.className = "trace-line return-line";
+  line.textContent = "⇒ " + text;
+  traceOutput.appendChild(line);
+  traceOutput.scrollTop = traceOutput.scrollHeight;
+  hideEmptyState();
 }
 
 function updateZoomLabel() {
@@ -367,6 +457,66 @@ function wireEvents() {
   // Export for tests
   window._replLineNumber = () => replLineNumber;
 
+  // ── Stepping: replay management ──
+
+  /** Update Step/Continue button highlight state. */
+  function updateStepButtons() {
+    if (stepping.suspended && stepping.queue.length > 0) {
+      btnStep.classList.add("step-highlight");
+      btnContinue.classList.add("step-highlight");
+    } else {
+      btnStep.classList.remove("step-highlight");
+      btnContinue.classList.remove("step-highlight");
+    }
+  }
+
+  /** Update the status bar with remaining step count. */
+  function updateStepStatus() {
+    const n = stepping.queue.length;
+    if (n > 0) {
+      setStatus(`Stepping \u2014 ${n} step${n !== 1 ? "s" : ""} remaining`, "stepping");
+    }
+  }
+
+  /** End the stepping suspension: show result, re-enable REPL. */
+  function finishStepping() {
+    if (!stepping.suspended) return;
+    stepping.suspended = false;
+    const p = stepping.pendingResult;
+    if (p) {
+      addToReplLog(p.thisLine, p.fullText, p.resultText, p.isError);
+      replLineNumber += p.numLines;
+      updateLineNumGutter();
+      stepping.pendingResult = null;
+    }
+    replInput.disabled = false;
+    replInput.focus();
+    setStatus("Ready", "ready");
+    updateStepButtons();
+  }
+
+  /** Advance one step group (called by Step button). */
+  function advanceOneStep() {
+    if (stepping.queue.length === 0) { finishStepping(); return; }
+    const ops = stepping.queue.shift();
+    for (const op of ops) op();
+    if (stepping.queue.length === 0) {
+      finishStepping();
+    } else {
+      updateStepStatus();
+      updateStepButtons();
+    }
+  }
+
+  /** Apply all remaining step groups (called by Continue button). */
+  function advanceAllSteps() {
+    while (stepping.queue.length > 0) {
+      const ops = stepping.queue.shift();
+      for (const op of ops) op();
+    }
+    finishStepping();
+  }
+
   // Auto-resize on input and update line numbers
   replInput.addEventListener("input", () => {
     autoResizeInput();
@@ -408,25 +558,55 @@ function wireEvents() {
       hideEmptyState();
       setStatus("Evaluating…", "busy");
 
+      // Set up step recording if stepping is active
+      const wasQueueing = stepping.active;
+      if (wasQueueing) {
+        stepping.queueing = true;
+        stepping.queue = [];
+        stepping.currentOps = [];
+        stepping.boundariesSeen = 0;
+      }
+
       let resultText = null;
       let isError = false;
       if (callbacks.eval) {
         try {
           const res = callbacks.eval(fullText);
           resultText = schemeToString(res);
-          setStatus("Ready", "ready");
         } catch (err) {
           console.error("eval error:", err);
           resultText = err.message || "unknown error";
           isError = true;
-          appImports.traceAppend("*** Error: " + err.message);
+          // On error during stepping, flush recorded steps then show error
+          if (stepping.queueing) {
+            stepping.queueing = false;
+            finalizeCurrentStep();
+            flushStepQueue();
+          }
+          realTraceAppend("*** Error: " + err.message);
           setStatus("Error", "error");
         }
       }
 
-      addToReplLog(thisLine, fullText, resultText, isError);
-      replLineNumber += numLines;
-      updateLineNumGutter();
+      stepping.queueing = false;
+      finalizeCurrentStep();
+
+      if (wasQueueing && stepping.boundariesSeen > 0 && !isError) {
+        // Enter stepping suspension — replay on Step/Continue clicks
+        stepping.suspended = true;
+        stepping.pendingResult = { thisLine, fullText, resultText, isError, numLines };
+        updateStepStatus();
+        replInput.disabled = true;
+        showTracePanel();
+        updateStepButtons();
+      } else {
+        // No stepping, or no boundaries, or error — apply immediately
+        if (wasQueueing) flushStepQueue();
+        addToReplLog(thisLine, fullText, resultText, isError);
+        replLineNumber += numLines;
+        updateLineNumGutter();
+        if (!isError) setStatus("Ready", "ready");
+      }
     } else if (e.key === "ArrowUp") {
       // Only navigate history if cursor is at the very start
       if (replInput.selectionStart === 0 && replInput.selectionEnd === 0) {
@@ -459,21 +639,27 @@ function wireEvents() {
 
   // ── Toolbar ──
   btnStep.addEventListener("click", () => {
-    if (callbacks.step) {
-      try { callbacks.step(); } catch (e) { console.error("step:", e); }
+    if (stepping.suspended && stepping.queue.length > 0) {
+      advanceOneStep();
     }
   });
 
   btnContinue.addEventListener("click", () => {
-    if (callbacks.continue_) {
-      try { callbacks.continue_(); } catch (e) { console.error("continue:", e); }
+    if (stepping.suspended) {
+      advanceAllSteps();
     }
   });
 
   chkStepping.addEventListener("change", () => {
+    stepping.active = chkStepping.checked;
     if (callbacks.toggleStep) {
       try { callbacks.toggleStep(); } catch (e) { console.error("toggleStep:", e); }
     }
+    // If turning off stepping while suspended, flush remaining steps
+    if (!stepping.active && stepping.suspended) {
+      advanceAllSteps();
+    }
+    updateStepButtons();
   });
 
   btnGC.addEventListener("click", () => {
@@ -483,6 +669,15 @@ function wireEvents() {
   });
 
   btnClear.addEventListener("click", () => {
+    // Cancel any pending step replay
+    if (stepping.suspended) {
+      stepping.queue = [];
+      stepping.currentOps = [];
+      stepping.suspended = false;
+      stepping.pendingResult = null;
+      replInput.disabled = false;
+      updateStepButtons();
+    }
     document.getElementById("trace-output").innerHTML = "";
     // Clear REPL log and reset line counter
     replLog.innerHTML = "";

@@ -225,6 +225,24 @@ header#toolbar {
   background: rgba(239,68,68,0.08);
 }
 
+.status-stepping {
+  color: var(--accent);
+  background: rgba(59,130,246,0.08);
+}
+
+/* Step/Continue button highlight when steps are pending */
+.tb-btn.step-highlight {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(59,130,246,0.25);
+}
+
+.tb-btn.step-highlight:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
 /* ── Main area ─────────────────────────────────────────────── */
 #main-area {
   display: flex;
@@ -628,6 +646,11 @@ header#toolbar {
 
 #repl-input::placeholder {
   color: var(--repl-dim);
+}
+
+#repl-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ── Keyboard shortcut hints (tooltip) ─────────────────────── */

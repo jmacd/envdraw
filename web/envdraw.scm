@@ -137,6 +137,8 @@
 (define-foreign register-toggle-step-handler "app" "registerToggleStepHandler"
   (ref null extern) -> none)
 
+(define-foreign notify-step-boundary "app" "notifyStepBoundary" -> none)
+
 (define-foreign register-resize-handler "app" "registerResizeHandler"
   (ref null extern) -> none)
 
@@ -189,6 +191,18 @@
 
 (define-foreign d3-update-binding "app" "d3UpdateBinding"
   (ref string) (ref string) (ref string) (ref string) -> none)
+
+(define-foreign d3-add-pair "app" "d3AddPair"
+  (ref string) (ref string) (ref string) -> none)
+
+(define-foreign d3-add-pair-edge "app" "d3AddPairEdge"
+  (ref string) (ref string) (ref string) -> none)
+
+(define-foreign d3-add-pair-atom "app" "d3AddPairAtom"
+  (ref string) (ref string) -> none)
+
+(define-foreign d3-add-pair-null "app" "d3AddPairNull"
+  (ref string) -> none)
 
 (define-foreign d3-remove-node "app" "d3RemoveNode"
   (ref string) -> none)
@@ -271,7 +285,7 @@
 
 (define *prims-list*
   `((cons . ,cons) (car . ,car) (cdr . ,cdr)
-    (set-car! . ,set-car!) (set-cdr! . ,set-cdr!)
+    (set-car! . ,envdraw-set-car!) (set-cdr! . ,envdraw-set-cdr!)
     (list . ,list) (append . ,append)
     (length . ,length) (reverse . ,reverse)
     (list-ref . ,list-ref)

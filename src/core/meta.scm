@@ -73,10 +73,6 @@
                  (else (string-append "#[primitive "
                                       (symbol->string var)
                                       "]")))))
-        ((list? object)
-         (string-append "("
-                        (string-join (map viewed-rep object) " ")
-                        ")"))
         ((pair? object)
          (format-sexp object))
         (else (format-sexp object))))
@@ -95,8 +91,12 @@
 ;;;                    UTILITY PROCEDURES
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;;; Simple S-expression formatter (replaces STk's format ~A for sexps)
+;;; Simple S-expression formatter (replaces STk's format ~A for sexps).
+;;; Uses safen-list to prevent infinite loops on circular structures.
 (define (format-sexp x)
+  (format-sexp-safe (safen-list x)))
+
+(define (format-sexp-safe x)
   (cond ((string? x) (string-append "\"" x "\""))
         ((symbol? x) (symbol->string x))
         ((number? x) (number->string x))
@@ -105,21 +105,21 @@
         ((char? x) (string-append "#\\" (string x)))
         ((vector? x)
          (string-append "#("
-                        (string-join (map format-sexp (vector->list x)) " ")
+                        (string-join (map format-sexp-safe (vector->list x)) " ")
                         ")"))
         ((pair? x)
          (string-append "("
                         (let loop ((p x))
                           (cond ((null? (cdr p))
-                                 (format-sexp (car p)))
+                                 (format-sexp-safe (car p)))
                                 ((pair? (cdr p))
-                                 (string-append (format-sexp (car p))
+                                 (string-append (format-sexp-safe (car p))
                                                 " "
                                                 (loop (cdr p))))
                                 (else
-                                 (string-append (format-sexp (car p))
+                                 (string-append (format-sexp-safe (car p))
                                                 " . "
-                                                (format-sexp (cdr p))))))
+                                                (format-sexp-safe (cdr p))))))
                         ")"))
         (else (let ((p (open-output-string)))
                 (write x p)
@@ -358,9 +358,13 @@
 ;;;                    WAIT FOR STEP
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;;; Replaces the tkwait-based stepping mechanism.
-;;; In the web version, this calls the observer which can suspend
-;;; the fiber until the user clicks Step/Continue.
+;;; Replaces the tkwait-based stepping mechanism from the original STk
+;;; version.  In the web version, the evaluator runs to completion
+;;; synchronously; stepping is implemented via record-and-replay.
+;;; When stepping is enabled, wait-for-confirmation calls the observer
+;;; which signals a step boundary to the JS side.  All D3 mutations
+;;; and trace output are recorded into step groups, then replayed one
+;;; group at a time when the user clicks Step.
 
 (define (wait-for-confirmation msg)
   (unless view:continue
@@ -757,7 +761,10 @@
   ;; Return the REPL evaluator procedure
   envdraw-eval-one)
 
-;;; Evaluate one expression (called from the REPL)
+;;; Evaluate one or more expressions (called from the REPL).
+;;; When multiple expressions are present in the input string,
+;;; all are read and evaluated in order; the result of the last
+;;; expression is returned.
 (define (envdraw-eval-one input-string)
   (stack-empty! the-eval-stack)
   (set! *eval-indent-level* 0)
@@ -769,14 +776,17 @@
     (set! *lambda-line-queue*
           (scan-lambda-lines input-string start-line))
     (set! view:continue (not view:use-stepping?))
-    (let ((input (read (open-input-string input-string))))
+    (let ((port (open-input-string input-string)))
       ;; Advance past all input lines
       (set! *current-repl-line*
             (+ start-line (- num-input-lines 1)))
-      (if (eof-object? input)
-          ""
-          (let ((result (view-eval input the-global-environment)))
-            (viewed-rep result))))))
+      ;; Read and evaluate all expressions, keeping the last result
+      (let loop ((last-result ""))
+        (let ((input (read port)))
+          (if (eof-object? input)
+              last-result
+              (loop (viewed-rep
+                     (view-eval input the-global-environment)))))))))
 
 ;;; Stepping controls (called from UI buttons)
 (define (env-step)

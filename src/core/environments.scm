@@ -119,8 +119,11 @@
                 (vtype (classify-value val))
                 ;; For procedures, pass the proc-id so the observer
                 ;; can draw a binding→procedure arrow.
-                (vrep (let ((pid (*extract-proc-id* val)))
-                        (if pid pid (viewed-rep val)))))
+                ;; For pairs, pass the actual pair so the observer
+                ;; can decompose it into box-and-pointer structure.
+                (vrep (cond ((*extract-proc-id* val) => (lambda (pid) pid))
+                            ((eq? vtype 'pair) val)
+                            (else (viewed-rep val)))))
            ((observer-on-binding-placed *current-observer*)
             (frame-info-id fi) var vrep vtype)))
        (first-frame env))
@@ -149,12 +152,16 @@
         (let ((binding (make-binding var val (frame-info-of env))))
           (set-first-frame! env (adjoin-binding binding (first-frame env)))
           (when (and (null? place?) *current-observer*)
-            (let ((pid (*extract-proc-id* val)))
+            (let* ((pid (*extract-proc-id* val))
+                   (vtype (classify-value val))
+                   (vrep (cond (pid pid)
+                               ((eq? vtype 'pair) val)
+                               (else (viewed-rep val)))))
               ((observer-on-binding-placed *current-observer*)
                (frame-info-id (frame-info-of env))
                var
-               (if pid pid (viewed-rep val))
-               (classify-value val))))))))
+               vrep
+               vtype)))))))
 
 (define (set-binding-value! binding value)
   (let ((old-val (binding-value binding)))
@@ -162,11 +169,12 @@
     (when *current-observer*
       (let ((bi (binding-info-of binding)))
         (when (binding-info? bi)
-          ((observer-on-binding-updated *current-observer*)
-           (frame-info-id (binding-info-frame bi))
-           (binding-variable binding)
-           (viewed-rep value)
-           (classify-value value)))))))
+          (let ((vtype (classify-value value)))
+            ((observer-on-binding-updated *current-observer*)
+             (frame-info-id (binding-info-frame bi))
+             (binding-variable binding)
+             (if (eq? vtype 'pair) value (viewed-rep value))
+             vtype)))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;                    FRAME CONSTRUCTION

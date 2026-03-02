@@ -34,6 +34,9 @@ const EnvDiagram = (() => {
   const PROC_CELL_W = 30;
   const PROC_CELL_H = 30;
   const PROC_LABEL_H = 18;
+  const PAIR_CELL_W = 30;   // width of each half of a cons cell
+  const PAIR_CELL_H = 30;   // height of a cons cell
+  const PAIR_ATOM_PAD = 6;  // padding around atom labels
   const ANIM_DURATION = 400;
 
   // Color palette for frames
@@ -122,10 +125,25 @@ const EnvDiagram = (() => {
       .attr("d", "M0,0 L10,3 L0,6 Z")
       .attr("fill", "#888");
 
-    // Zoom layer
+    // Arrowhead for pair (car/cdr) pointers
+    defs.append("marker")
+      .attr("id", "arrowhead-pair")
+      .attr("viewBox", "0 0 10 6")
+      .attr("refX", 10)
+      .attr("refY", 3)
+      .attr("markerWidth", 10)
+      .attr("markerHeight", 6)
+      .attr("orient", "auto")
+      .append("path")
+      .attr("d", "M0,0 L10,3 L0,6 Z")
+      .attr("fill", "#444");
+
+    // Zoom layer — nodes first so edges (arrows) render on top and
+    // arrowheads are always visible even when they touch a shape.
     zoomLayer = svg.append("g").attr("class", "zoom-layer");
-    edgeGroup = zoomLayer.append("g").attr("class", "edges");
     nodeGroup = zoomLayer.append("g").attr("class", "nodes");
+    edgeGroup = zoomLayer.append("g").attr("class", "edges")
+      .attr("pointer-events", "none");
 
     // D3-zoom
     zoomBehavior = d3.zoom()
@@ -138,23 +156,29 @@ const EnvDiagram = (() => {
     // Initialize force simulation
     simulation = d3.forceSimulation(nodes)
       .force("charge", d3.forceManyBody().strength(-150))
-      .force("collide", d3.forceCollide().radius(d =>
-        d.type === "frame"
-          ? Math.max(d.width, d.height) * 0.6 + 20
-          : Math.max(d.width || 60, d.height || 48) * 0.5 + 10
-      ).strength(0.8).iterations(2))
+      .force("collide", d3.forceCollide().radius(d => {
+        if (d.type === "frame")
+          return Math.max(d.width, d.height) * 0.6 + 20;
+        if (d.type === "pair-null" || d.type === "pair-atom")
+          return Math.max(d.width || 14, d.height || 14) * 0.5 + 4;
+        return Math.max(d.width || 60, d.height || 48) * 0.5 + 10;
+      }).strength(0.8).iterations(2))
       .force("link", d3.forceLink(edges)
         .id(d => d.id)
         .distance(d => {
           if (d.edgeType === "env") return 160;
           if (d.edgeType === "proc-env") return 120;
           if (d.edgeType === "binding") return 130;
+          if (d.edgeType === "car") return 65;
+          if (d.edgeType === "cdr") return 70;
           return 120;
         })
         .strength(d => {
           if (d.edgeType === "env") return 0.2;
           if (d.edgeType === "binding") return 0.15;
           if (d.edgeType === "proc-env") return 0.15;
+          if (d.edgeType === "car") return 0.6;
+          if (d.edgeType === "cdr") return 0.6;
           return 0.2;
         })
       )
@@ -169,11 +193,17 @@ const EnvDiagram = (() => {
           const frameDepth = getFrameDepth(d.frameId);
           return 80 + frameDepth * 170 + 30;
         }
+        // Pair nodes: let link force position them, weak center pull
+        if (d.type === "pair" || d.type === "pair-atom" || d.type === "pair-null") {
+          return height / 2;
+        }
         return height / 2;
       }).strength(d => {
         // Very strong Y keeps hierarchy stable
         if (d.type === "frame") return 1.0;
         if (d.type === "procedure") return 0.7;
+        // Weak Y for pair nodes — link force does the positioning
+        if (d.type === "pair" || d.type === "pair-atom" || d.type === "pair-null") return 0.02;
         return 0.3;
       }))
       .force("x", d3.forceX().x(d => {
@@ -183,7 +213,11 @@ const EnvDiagram = (() => {
           if (fn) return (fn.x || width / 2) + 180;
         }
         return width / 2;
-      }).strength(d => d.type === "procedure" ? 0.12 : 0.08))
+      }).strength(d => {
+        if (d.type === "procedure") return 0.12;
+        if (d.type === "pair" || d.type === "pair-atom" || d.type === "pair-null") return 0.02;
+        return 0.08;
+      }))
       .velocityDecay(0.7)
       .alphaDecay(0.05)
       .on("tick", ticked);
@@ -229,29 +263,78 @@ const EnvDiagram = (() => {
     const tw = t.width || FRAME_MIN_W;
     const th = t.height || 60;
 
-    // Procedure dots are in the cons-cell rect, which sits at the top
-    // of the node bounding box.  The node center (d.y) is the middle of
-    // the full height (cell + label), so the dot Y in world coords is
-    // offset upward by (height - PROC_CELL_H) / 2.
-    function procDotY(node) {
-      return node.y - ((node.height || (PROC_CELL_H + PROC_LABEL_H)) - PROC_CELL_H) / 2;
+    // Procedure dots are in the cons-cell rect, which sits at the top-left
+    // of the node bounding box.  The node center (d.x, d.y) is the center
+    // of the full bounding box (which includes the possibly-wider lambda
+    // label text below the cell).  These helpers compute the cons-cell
+    // center in world coords so arrows terminate at the actual cell.
+    function procCellCX(node) {
+      // Cons cell starts at local x=0, is PROC_CELL_W*2 wide.
+      // Node is translated to (node.x - node.width/2, ...).
+      // So cell center X = node.x - node.width/2 + PROC_CELL_W.
+      return node.x - (node.width || PROC_CELL_W * 2) / 2 + PROC_CELL_W;
+    }
+    function procCellCY(node) {
+      // Cons cell starts at local y=0, is PROC_CELL_H tall.
+      // Node is translated to (..., node.y - node.height/2).
+      // So cell center Y = node.y - node.height/2 + PROC_CELL_H/2.
+      return node.y - (node.height || (PROC_CELL_H + PROC_LABEL_H)) / 2 + PROC_CELL_H / 2;
     }
 
     if (d.edgeType === "binding") {
-      // From binding dot in source frame → left-dot of target procedure
+      // From binding dot in source frame → left-dot of target procedure or pair
       const bindIdx = frameBindings(s.id).findIndex(b => b.procId === t.id);
       const bindY = FRAME_HEADER_H + (bindIdx >= 0 ? bindIdx : 0) * BINDING_H + BINDING_H / 2;
       // Source: right side of frame at binding row height
       sx = s.x + sw / 2;
       sy = s.y - sh / 2 + bindY;
-      // Target: left-dot center of procedure (cons-cell left half-center)
-      tx = t.x - tw / 2 + PROC_CELL_W / 2;
-      ty = procDotY(t);
+      if (t.type === "pair") {
+        // Target: edge of pair cons-cell bounding box
+        const pt = intersectNodeRect(t, sx, sy);
+        tx = pt.x;
+        ty = pt.y;
+      } else {
+        // Target: edge of procedure cons-cell (exclude label area)
+        const pt = intersectNodeRect(t, sx, sy,
+          PROC_CELL_W * 2, PROC_CELL_H, procCellCX(t), procCellCY(t));
+        tx = pt.x;
+        ty = pt.y;
+      }
+    } else if (d.edgeType === "car") {
+      // From car-dot of source cons cell → target (pair, atom, null, or proc)
+      sx = s.x - sw / 2 + PAIR_CELL_W / 2;
+      sy = s.y;
+      // Target: edge of target node
+      if (t.type === "procedure") {
+        const pt = intersectNodeRect(t, sx, sy,
+          PROC_CELL_W * 2, PROC_CELL_H, procCellCX(t), procCellCY(t));
+        tx = pt.x;
+        ty = pt.y;
+      } else {
+        const pt = intersectNodeRect(t, sx, sy);
+        tx = pt.x;
+        ty = pt.y;
+      }
+    } else if (d.edgeType === "cdr") {
+      // From cdr-dot of source cons cell → target
+      sx = s.x - sw / 2 + PAIR_CELL_W * 1.5;
+      sy = s.y;
+      // Target: edge of target node
+      if (t.type === "procedure") {
+        const pt = intersectNodeRect(t, sx, sy,
+          PROC_CELL_W * 2, PROC_CELL_H, procCellCX(t), procCellCY(t));
+        tx = pt.x;
+        ty = pt.y;
+      } else {
+        const pt = intersectNodeRect(t, sx, sy);
+        tx = pt.x;
+        ty = pt.y;
+      }
     } else if (d.edgeType === "proc-env") {
       // Source is procedure, target is frame
       // From right-dot of procedure → nearest edge of target frame
       sx = s.x - (s.width || PROC_CELL_W * 2) / 2 + PROC_CELL_W * 1.5;
-      sy = procDotY(s);
+      sy = procCellCY(s);
       // Target: nearest point on frame border
       const targetPt = nearestFrameEdge(t, sx, sy);
       tx = targetPt.x;
@@ -268,32 +351,27 @@ const EnvDiagram = (() => {
     } else {
       sx = s.x;
       sy = s.y;
-      tx = t.x;
-      ty = t.y;
-    }
-
-    // Shorten the line to account for arrowhead
-    const dx = tx - sx, dy = ty - sy;
-    const len = Math.sqrt(dx * dx + dy * dy);
-    if (len > 12) {
-      tx -= (dx / len) * 8;
-      ty -= (dy / len) * 8;
+      const pt = intersectNodeRect(t, sx, sy);
+      tx = pt.x;
+      ty = pt.y;
     }
 
     // Use quadratic Bézier for a gentle curve
     const mx = (sx + tx) / 2;
     const my = (sy + ty) / 2;
     // Offset control point perpendicular to the line
-    const ndx = -(ty - sy);
-    const ndy = tx - sx;
-    const nlen = Math.sqrt(ndx * ndx + ndy * ndy) || 1;
+    const edx = tx - sx, edy = ty - sy;
+    const len = Math.sqrt(edx * edx + edy * edy) || 1;
+    const ndx = -edy;
+    const ndy = edx;
     // Curvature factor varies by edge type
     let curveFactor = 0;
     if (d.edgeType === "binding") curveFactor = 0.15;
     else if (d.edgeType === "proc-env") curveFactor = 0.12;
     else if (d.edgeType === "env") curveFactor = 0.1;
-    const cx = mx + (ndx / nlen) * len * curveFactor;
-    const cy = my + (ndy / nlen) * len * curveFactor;
+    else if (d.edgeType === "car" || d.edgeType === "cdr") curveFactor = 0.08;
+    const cx = mx + (ndx / len) * len * curveFactor;
+    const cy = my + (ndy / len) * len * curveFactor;
 
     return `M${sx},${sy} Q${cx},${cy} ${tx},${ty}`;
   }
@@ -325,6 +403,44 @@ const EnvDiagram = (() => {
       }
     }
     return best;
+  }
+
+  /**
+   * Intersect the line from (fromX, fromY) through a rectangular node's
+   * centre with the node's bounding-box edge.  Optional overrides let
+   * callers target a sub-region (e.g. only the cons-cell portion of a
+   * procedure node, excluding the label area below it).
+   */
+  function intersectNodeRect(node, fromX, fromY, overrideW, overrideH, overrideCX, overrideCY) {
+    const w  = overrideW  !== undefined ? overrideW  : (node.width  || 60);
+    const h  = overrideH  !== undefined ? overrideH  : (node.height || 60);
+    const cx = overrideCX !== undefined ? overrideCX : node.x;
+    const cy = overrideCY !== undefined ? overrideCY : node.y;
+    const hw = w / 2;
+    const hh = h / 2;
+
+    const dx = fromX - cx;
+    const dy = fromY - cy;
+    const absDx = Math.abs(dx);
+    const absDy = Math.abs(dy);
+
+    // Degenerate — source is exactly at centre
+    if (absDx < 0.001 && absDy < 0.001) return { x: cx, y: cy - hh };
+
+    let scale;
+    if (absDx < 0.001) {
+      scale = hh / absDy;
+    } else if (absDy < 0.001) {
+      scale = hw / absDx;
+    } else if (hw * absDy <= hh * absDx) {
+      // Hits left or right edge
+      scale = hw / absDx;
+    } else {
+      // Hits top or bottom edge
+      scale = hh / absDy;
+    }
+
+    return { x: cx + dx * scale, y: cy + dy * scale };
   }
 
   // ─── SVG rendering (D3 enter/update/exit) ──────────────────────
@@ -365,12 +481,16 @@ const EnvDiagram = (() => {
         if (d.edgeType === "env") return "#888";
         if (d.edgeType === "proc-env") return "#6a9";
         if (d.edgeType === "binding") return "#555";
+        if (d.edgeType === "car" || d.edgeType === "cdr") return "#444";
         return "#666";
       })
       .attr("stroke-width", d => d.edgeType === "env" ? 1.0 : 1.2)
       .attr("stroke-dasharray", d => d.edgeType === "env" ? "4,3" : null)
-      .attr("marker-end", d =>
-        d.edgeType === "env" ? "url(#arrowhead-env)" : "url(#arrowhead)")
+      .attr("marker-end", d => {
+        if (d.edgeType === "env") return "url(#arrowhead-env)";
+        if (d.edgeType === "car" || d.edgeType === "cdr") return "url(#arrowhead-pair)";
+        return "url(#arrowhead)";
+      })
       .attr("opacity", 0)
       .transition().duration(ANIM_DURATION)
       .attr("opacity", 1);
@@ -404,6 +524,21 @@ const EnvDiagram = (() => {
     // Render procedure interiors
     enter.filter(d => d.type === "procedure").each(function (d) {
       renderProcedure(d3.select(this), d);
+    });
+
+    // Render pair (cons cell) interiors
+    enter.filter(d => d.type === "pair").each(function (d) {
+      renderPairCell(d3.select(this), d);
+    });
+
+    // Render pair atom (leaf value) interiors
+    enter.filter(d => d.type === "pair-atom").each(function (d) {
+      renderPairAtom(d3.select(this), d);
+    });
+
+    // Render pair null (empty list terminator)
+    enter.filter(d => d.type === "pair-null").each(function (d) {
+      renderPairNull(d3.select(this), d);
     });
 
     // Animate in
@@ -494,8 +629,8 @@ const EnvDiagram = (() => {
           .attr("font-family", "monospace")
           .attr("fill", "#666")
           .text(binding.value);
-      } else if (binding.valueType === "procedure") {
-        // Small dot (pointer origin for binding→proc edge)
+      } else if (binding.valueType === "procedure" || binding.valueType === "pair") {
+        // Small dot (pointer origin for binding→proc or binding→pair edge)
         const dotX = BINDING_PAD + (binding.varName.length + 1) * 7 + 14;
         bg.append("circle")
           .attr("class", "binding-dot")
@@ -578,6 +713,125 @@ const EnvDiagram = (() => {
     const textW = labelText.length * 6 + 8;
     d.width = Math.max(w, textW);
     d.height = h + PROC_LABEL_H;
+  }
+
+  // ─── Pair (cons cell) SVG — box-and-pointer diagram ─────────────
+  function renderPairCell(g, d) {
+    const w = PAIR_CELL_W * 2;
+    const h = PAIR_CELL_H;
+
+    // Background rect (cons-cell: two adjacent boxes)
+    g.append("rect")
+      .attr("class", "pair-bg")
+      .attr("width", w).attr("height", h)
+      .attr("rx", 2).attr("ry", 2)
+      .attr("fill", "#fff")
+      .attr("stroke", "#333")
+      .attr("stroke-width", 1.2);
+
+    // Vertical divider between car and cdr halves
+    g.append("line")
+      .attr("class", "pair-divider")
+      .attr("x1", PAIR_CELL_W).attr("y1", 0)
+      .attr("x2", PAIR_CELL_W).attr("y2", h)
+      .attr("stroke", "#333")
+      .attr("stroke-width", 1.2);
+
+    // If car has a null marker ("/"), draw diagonal slash
+    if (d.carLabel === "/") {
+      g.append("line")
+        .attr("class", "pair-car-null")
+        .attr("x1", 4).attr("y1", h - 4)
+        .attr("x2", PAIR_CELL_W - 4).attr("y2", 4)
+        .attr("stroke", "#333")
+        .attr("stroke-width", 1.2);
+    } else if (d.carLabel && d.carLabel.length > 0 && d.carLabel.length <= 6) {
+      // Short inline atom label
+      g.append("text")
+        .attr("class", "pair-car-label")
+        .attr("x", PAIR_CELL_W / 2)
+        .attr("y", h / 2 + 4)
+        .attr("text-anchor", "middle")
+        .attr("font-size", "10px")
+        .attr("font-family", "monospace")
+        .attr("fill", "#333")
+        .text(d.carLabel);
+    } else {
+      // Dot in car half (pointer origin)
+      g.append("circle")
+        .attr("class", "pair-car-dot")
+        .attr("cx", PAIR_CELL_W / 2)
+        .attr("cy", h / 2)
+        .attr("r", 3)
+        .attr("fill", "#444");
+    }
+
+    // If cdr has a null marker ("/"), draw diagonal slash
+    if (d.cdrLabel === "/") {
+      g.append("line")
+        .attr("class", "pair-cdr-null")
+        .attr("x1", PAIR_CELL_W + 4).attr("y1", h - 4)
+        .attr("x2", PAIR_CELL_W * 2 - 4).attr("y2", 4)
+        .attr("stroke", "#333")
+        .attr("stroke-width", 1.2);
+    } else if (d.cdrLabel && d.cdrLabel.length > 0 && d.cdrLabel.length <= 6) {
+      // Short inline atom label
+      g.append("text")
+        .attr("class", "pair-cdr-label")
+        .attr("x", PAIR_CELL_W * 1.5)
+        .attr("y", h / 2 + 4)
+        .attr("text-anchor", "middle")
+        .attr("font-size", "10px")
+        .attr("font-family", "monospace")
+        .attr("fill", "#333")
+        .text(d.cdrLabel);
+    } else {
+      // Dot in cdr half (pointer origin)
+      g.append("circle")
+        .attr("class", "pair-cdr-dot")
+        .attr("cx", PAIR_CELL_W * 1.5)
+        .attr("cy", h / 2)
+        .attr("r", 3)
+        .attr("fill", "#444");
+    }
+
+    d.width = w;
+    d.height = h;
+  }
+
+  // ─── Pair atom (leaf value) SVG ─────────────────────────────────
+  function renderPairAtom(g, d) {
+    const label = d.label || "";
+    const textW = label.length * 7 + PAIR_ATOM_PAD * 2;
+    const h = 20;
+
+    g.append("text")
+      .attr("class", "pair-atom-label")
+      .attr("x", textW / 2)
+      .attr("y", h / 2 + 4)
+      .attr("text-anchor", "middle")
+      .attr("font-size", "10px")
+      .attr("font-family", "monospace")
+      .attr("fill", "#333")
+      .text(label);
+
+    d.width = Math.max(textW, 20);
+    d.height = h;
+  }
+
+  // ─── Null terminator SVG (diagonal slash) ───────────────────────
+  function renderPairNull(g, d) {
+    const s = 14;
+    // Draw a diagonal line (classic null representation)
+    g.append("line")
+      .attr("class", "pair-null-slash")
+      .attr("x1", 0).attr("y1", s)
+      .attr("x2", s).attr("y2", 0)
+      .attr("stroke", "#333")
+      .attr("stroke-width", 1.5);
+
+    d.width = s;
+    d.height = s;
   }
 
   // ─── Drag behavior ─────────────────────────────────────────────
@@ -723,6 +977,20 @@ const EnvDiagram = (() => {
       }
     }
 
+    // Add binding→pair edge if this is a pair binding
+    // procId field is reused to carry the root pair-node id
+    if (valueType === "pair" && procId) {
+      const eid = edgeId(frameId, procId, "binding");
+      if (!edges.find(e => e.id === eid)) {
+        edges.push({
+          id: eid,
+          source: frameId,
+          target: procId,
+          edgeType: "binding",
+        });
+      }
+    }
+
     render();
   }
 
@@ -735,6 +1003,110 @@ const EnvDiagram = (() => {
       binding.valueType = valueType;
     }
     render();
+  }
+
+  // ─── Pair (cons cell) public API ─────────────────────────────────
+
+  /** addPair: create a cons-cell node with optional inline labels */
+  function addPair(id, carLabel, cdrLabel) {
+    if (nodeById(id)) return;
+
+    const node = {
+      id,
+      type: "pair",
+      carLabel: carLabel || "",
+      cdrLabel: cdrLabel || "",
+      width: PAIR_CELL_W * 2,
+      height: PAIR_CELL_H,
+    };
+
+    // Find a neighboring pair or frame to position near
+    // For now, place to the right of the last-added pair or frame
+    const lastPair = nodes.filter(n => n.type === "pair").pop();
+    const lastFrame = nodes.filter(n => n.type === "frame").pop();
+    const anchor = lastPair || lastFrame;
+    if (anchor) {
+      node.x = (anchor.x || width / 2) + 80 + (Math.random() - 0.5) * 30;
+      node.y = (anchor.y || height / 2) + (Math.random() - 0.5) * 30;
+    } else {
+      node.x = width / 2 + 100;
+      node.y = height / 2;
+    }
+
+    nodes.push(node);
+    // Don't render yet — wait for pair edges to be added
+    return id;
+  }
+
+  /** addPairEdge: connect a cons cell to its car or cdr child */
+  function addPairEdge(fromId, toId, type) {
+    // type is "car" or "cdr"
+    const eid = edgeId(fromId, toId, type);
+    if (edges.find(e => e.id === eid)) return;
+
+    edges.push({
+      id: eid,
+      source: fromId,
+      target: toId,
+      edgeType: type,  // "car" or "cdr"
+    });
+
+    // Position child near parent for good list/tree initial layout
+    const parent = nodeById(fromId);
+    const child = nodeById(toId);
+    if (parent && child) {
+      const px = parent.x || width / 2;
+      const py = parent.y || height / 2;
+      if (type === "cdr") {
+        // cdr goes to the right (list layout)
+        child.x = px + 80;
+        child.y = py;
+      } else {
+        // car goes below (tree layout)
+        child.x = px;
+        child.y = py + 60;
+      }
+    }
+
+    render();
+  }
+
+  /** addPairAtom: create a leaf atom node for pair display */
+  function addPairAtom(id, label) {
+    if (nodeById(id)) return;
+
+    const textW = (label || "").length * 7 + PAIR_ATOM_PAD * 2;
+    const node = {
+      id,
+      type: "pair-atom",
+      label: label || "",
+      width: Math.max(textW, 20),
+      height: 20,
+    };
+
+    node.x = width / 2 + (Math.random() - 0.5) * 100;
+    node.y = height / 2 + (Math.random() - 0.5) * 100;
+
+    nodes.push(node);
+    return id;
+  }
+
+  /** addPairNull: create a null terminator node */
+  function addPairNull(id) {
+    if (nodeById(id)) return;
+
+    const node = {
+      id,
+      type: "pair-null",
+      width: 14,
+      height: 14,
+    };
+
+    node.x = width / 2 + (Math.random() - 0.5) * 100;
+    node.y = height / 2 + (Math.random() - 0.5) * 100;
+
+    nodes.push(node);
+    return id;
   }
 
   function removeNode(id) {
@@ -838,6 +1210,10 @@ const EnvDiagram = (() => {
     addProcedure,
     addBinding,
     updateBinding,
+    addPair,
+    addPairEdge,
+    addPairAtom,
+    addPairNull,
     removeNode,
     removeEdge,
     fitToView,
