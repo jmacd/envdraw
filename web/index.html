@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EnvDraw — Environment Diagrams</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+<body>
+  <div id="app">
+
+    <!-- Top toolbar -->
+    <header id="toolbar">
+      <div class="toolbar-left">
+        <span class="brand">EnvDraw</span>
+        <div class="toolbar-sep"></div>
+        <button id="btn-step" class="tb-btn" title="Step one evaluation (F10)">
+          <span class="tb-icon">▶︎</span> Step
+        </button>
+        <button id="btn-continue" class="tb-btn" title="Continue without stopping (F5)">
+          <span class="tb-icon">⏩</span> Continue
+        </button>
+        <div class="toolbar-sep"></div>
+        <label class="tb-toggle" title="Toggle stepping mode">
+          <input type="checkbox" id="chk-stepping">
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          <span class="toggle-label">Stepping</span>
+        </label>
+        <div class="toolbar-sep"></div>
+        <button id="btn-gc" class="tb-btn tb-btn-subtle" title="Garbage collect">GC</button>
+        <button id="btn-clear" class="tb-btn tb-btn-subtle" title="Clear diagram and trace">Clear</button>
+      </div>
+      <div class="toolbar-right">
+        <span id="status-indicator" class="status-ready">Ready</span>
+        <button id="btn-toggle-trace" class="tb-btn tb-btn-icon" title="Toggle trace panel (T)">
+          <span class="tb-icon">☰</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main content: canvas + optional trace sidebar -->
+    <div id="main-area">
+      <div id="canvas-container">
+        <svg id="diagram-svg"></svg>
+        <!-- Zoom controls overlay -->
+        <div id="zoom-controls">
+          <button id="btn-zoom-in" class="zoom-btn" title="Zoom in (+)">+</button>
+          <button id="btn-zoom-reset" class="zoom-btn zoom-label" title="Reset zoom (0)">100%</button>
+          <button id="btn-zoom-out" class="zoom-btn" title="Zoom out (−)">−</button>
+          <button id="btn-fit" class="zoom-btn" title="Fit diagram to view (F)">⊞</button>
+        </div>
+        <!-- Empty state -->
+        <div id="empty-state">
+          <div class="empty-icon">λ</div>
+          <div class="empty-title">No diagram yet</div>
+          <div class="empty-hint">Type a Scheme expression below to begin</div>
+          <div class="empty-examples">
+            <code>(define x 42)</code>
+            <code>(define (square n) (* n n))</code>
+            <code>(square 5)</code>
+          </div>
+        </div>
+      </div>
+
+      <!-- Resize handle -->
+      <div id="resize-handle" class="hidden" title="Drag to resize trace panel"></div>
+
+      <!-- Trace sidebar (right side, collapsible — starts closed) -->
+      <aside id="trace-panel" class="collapsed">
+        <div class="trace-header">
+          <span class="trace-title">Trace</span>
+          <button id="btn-clear-trace" class="trace-btn" title="Clear trace">✕</button>
+        </div>
+        <div id="trace-output"></div>
+      </aside>
+    </div>
+
+    <!-- REPL -->
+    <div id="repl-area">
+      <div id="repl-log"></div>
+      <div id="repl-input-row">
+        <div id="input-line-nums"><span>1</span></div>
+        <span class="prompt">&gt;</span>
+        <textarea id="repl-input" rows="5" autofocus
+                  placeholder="Type a Scheme expression… (Shift+Enter for newline)"
+                  spellcheck="false" autocomplete="off"></textarea>
+      </div>
+    </div>
+
+  </div>
+  <script type="text/javascript" src="reflect.js"></script>
+  <script type="text/javascript" src="d3-diagram.js"></script>
+  <script>
+    // Cache-bust boot.js — bump version when boot.js changes
+    const s = document.createElement("script");
+    s.src = "boot.js?v=11";
+    document.body.appendChild(s);
+  </script>
+</body>
+</html>

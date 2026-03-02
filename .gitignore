@@ -1,0 +1,8 @@
+# Guile compilation cache
+guile-*/
+
+# Editor
+.vscode/
+
+# macOS
+.DS_Store

@@ -1,0 +1,65 @@
+# Deploy EnvDraw to GitHub Pages
+#
+# - On push to main: deploys web/ to GitHub Pages.
+# - On pull request to main: validates required files exist.
+# - Manual trigger via workflow_dispatch.
+
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify required files exist
+        run: |
+          echo "Checking required site files..."
+          for f in index.html boot.js reflect.js d3-diagram.js style.css \
+                   reflect.wasm wtf8.wasm envdraw.wasm; do
+            if [ ! -f "web/$f" ]; then
+              echo "ERROR: missing web/$f"
+              exit 1
+            fi
+          done
+          echo "All required files present."
+
+  deploy:
+    needs: validate
+    if: github.event_name != 'pull_request'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
