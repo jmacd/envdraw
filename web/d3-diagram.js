@@ -282,11 +282,17 @@ const EnvDiagram = (() => {
     }
 
     if (d.edgeType === "binding") {
-      // From binding dot in source frame → left-dot of target procedure or pair
-      const bindIdx = frameBindings(s.id).findIndex(b => b.procId === t.id);
+      // From binding dot in source frame → target procedure or pair.
+      // The dot is drawn inside the frame at a position that depends
+      // on the variable name length — match renderBindings() exactly.
+      const fb = frameBindings(s.id);
+      const bindIdx = fb.findIndex(b => b.procId === t.id);
+      const binding = bindIdx >= 0 ? fb[bindIdx] : null;
       const bindY = FRAME_HEADER_H + (bindIdx >= 0 ? bindIdx : 0) * BINDING_H + BINDING_H / 2;
-      // Source: right side of frame at binding row height
-      sx = s.x + sw / 2;
+      const varLen = binding ? binding.varName.length : 4;
+      const dotLocalX = BINDING_PAD + (varLen + 1) * 7 + 14;
+      // Source: dot position inside the frame (local → world)
+      sx = s.x - sw / 2 + dotLocalX;
       sy = s.y - sh / 2 + bindY;
       if (t.type === "pair") {
         // Target: edge of pair cons-cell bounding box
@@ -940,6 +946,13 @@ const EnvDiagram = (() => {
   }
 
   function addBinding(frameId, varName, value, valueType, procId) {
+    // For procedure bindings the Scheme side passes the proc-id as both
+    // the value (3rd arg) and procId (5th arg).  If the 5th arg is lost
+    // at the Hoot FFI boundary, fall back to value.
+    if (valueType === "procedure" && !procId && value) {
+      procId = value;
+    }
+
     if (!bindings[frameId]) bindings[frameId] = [];
 
     // Check if binding already exists
@@ -999,8 +1012,34 @@ const EnvDiagram = (() => {
     if (!fb) return;
     const binding = fb.find(b => b.varName === varName);
     if (binding) {
+      // Remove old binding→proc/pair edge if target is changing
+      if (binding.procId) {
+        const oldEid = edgeId(frameId, binding.procId, "binding");
+        edges = edges.filter(e => {
+          const eid = typeof e.id === "string" ? e.id : "";
+          return eid !== oldEid;
+        });
+      }
+
       binding.value = newValue;
       binding.valueType = valueType;
+
+      // For procedure bindings, newValue IS the proc-id
+      if (valueType === "procedure" && newValue) {
+        binding.procId = newValue;
+        const eid = edgeId(frameId, newValue, "binding");
+        if (!edges.find(e => e.id === eid)) {
+          edges.push({
+            id: eid,
+            source: frameId,
+            target: newValue,
+            edgeType: "binding",
+          });
+        }
+      } else if (valueType !== "pair") {
+        // Atom binding — clear procId
+        binding.procId = null;
+      }
     }
     render();
   }

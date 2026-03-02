@@ -169,11 +169,14 @@
     (when *current-observer*
       (let ((bi (binding-info-of binding)))
         (when (binding-info? bi)
-          (let ((vtype (classify-value value)))
+          (let* ((vtype (classify-value value))
+                 (vrep (cond ((*extract-proc-id* value) => (lambda (pid) pid))
+                             ((eq? vtype 'pair) value)
+                             (else (viewed-rep value)))))
             ((observer-on-binding-updated *current-observer*)
              (frame-info-id (binding-info-frame bi))
              (binding-variable binding)
-             (if (eq? vtype 'pair) value (viewed-rep value))
+             vrep
              vtype)))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

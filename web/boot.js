@@ -176,6 +176,7 @@ const appImports = {
     const a = schemeToString(frameId), b = schemeToString(varName),
           c = schemeToString(value), d = schemeToString(valueType),
           e = schemeToString(procId);
+    console.log("[d3AddBinding]", {frameId: a, varName: b, value: c, valueType: d, procId: e, rawProcId: procId});
     if (stepping.queueing) { stepping.currentOps.push(() => EnvDiagram.addBinding(a, b, c, d, e)); return; }
     EnvDiagram.addBinding(a, b, c, d, e);
   },

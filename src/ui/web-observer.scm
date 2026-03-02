@@ -381,6 +381,12 @@
                               (viewed-rep new-value) type-str)
            ;; TODO: update the binding→pair edge target
            (request-render!)))
+        ;; Procedure: pass proc-id for binding→proc edge update
+        ((eq? value-type 'procedure)
+         (let ((proc-id (if (string? new-value) new-value
+                            (format-sexp new-value))))
+           (d3-update-binding frame-id var-str proc-id type-str)
+           (request-render!)))
         (else
          (let ((val-str (if (string? new-value) new-value
                             (format-sexp new-value))))
