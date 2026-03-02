@@ -781,12 +781,22 @@
       (set! *current-repl-line*
             (+ start-line (- num-input-lines 1)))
       ;; Read and evaluate all expressions, keeping the last result
-      (let loop ((last-result ""))
+      (let loop ((last-result "") (first? #t))
         (let ((input (read port)))
           (if (eof-object? input)
               last-result
-              (loop (viewed-rep
-                     (view-eval input the-global-environment)))))))))
+              (begin
+                ;; Insert a step boundary between top-level
+                ;; expressions so the user can step through them
+                ;; individually.
+                (unless first?
+                  (wait-for-confirmation
+                   (string-append
+                    "Next expression: "
+                    (format-sexp (safen-list input)))))
+                (loop (viewed-rep
+                       (view-eval input the-global-environment))
+                      #f))))))))
 
 ;;; Stepping controls (called from UI buttons)
 (define (env-step)
