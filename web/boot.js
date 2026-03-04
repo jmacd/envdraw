@@ -578,6 +578,11 @@ function wireEvents() {
         try {
           const res = callbacks.eval(fullText);
           resultText = schemeToString(res);
+          // Auto-GC after successful evaluation (like the original's gc-view)
+          // This cleans up any frames that became unreachable during eval.
+          if (callbacks.gc && !stepping.active) {
+            try { callbacks.gc(); } catch (e) { console.error("auto-gc:", e); }
+          }
         } catch (err) {
           console.error("eval error:", err);
           resultText = err.message || "unknown error";

@@ -453,7 +453,22 @@
    (lambda (obj-id) (values))
 
    ;; on-request-render: () → void
-   (lambda () (request-render!))))
+   (lambda () (request-render!))
+
+   ;; on-tail-gc: (frame-id) → void
+   ;; Remove a frame that became unreachable due to a tail call.
+   (lambda (frame-id)
+     ;; Remove the frame node from D3 (also removes edges)
+     (d3-remove-node frame-id)
+     ;; Remove from tracking list
+     (set! *frame-ids*
+           (let loop ((ids *frame-ids*) (keep '()))
+             (cond ((null? ids) keep)
+                   ((equal? (car ids) frame-id)
+                    (loop (cdr ids) keep))
+                   (else (loop (cdr ids)
+                               (cons (car ids) keep))))))
+     (request-render!))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;             DRAG-AND-DROP (handled by D3 — stubs)

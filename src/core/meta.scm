@@ -195,6 +195,18 @@
 (define view:continue #f)
 (define view:use-stepping? #f)
 
+;;; Tail-call optimization state
+;;; *tail-call-env* holds the environment whose frame should be removed
+;;; when a tail call creates a new frame.  Set in tail positions
+;;; (eval-sequence last-exp, eval-if branches, etc.).
+(define *tail-call-env* #f)
+
+;;; *frame-closures-count* tracks how many closures (lambdas) have been
+;;; created inside the current application frame.  If any closures were
+;;; created, the frame is conservatively kept alive since a closure
+;;; might have captured it.
+(define *frame-closures-count* 0)
+
 ;;; The current observer (set at startup)
 (define *meta-observer* #f)
 
@@ -354,6 +366,22 @@
   (when *meta-observer*
     ((observer-on-reduce *meta-observer*) *eval-indent-level*)))
 
+;;; reduce-with-env: like reduce, but also records the environment
+;;; whose frame becomes dead when the tail call completes.
+;;; Only the innermost (most recent) tail-call env is tracked;
+;;; nested reductions within the same tail chain are fine — each
+;;; subsequent reduce-with-env overwrites the previous, which is
+;;; correct because the earlier frame is already in the caller's
+;;; tail chain and will also become unreachable.
+(define (reduce-with-env env)
+  (reduce)
+  ;; Only mark for tail-GC if this is NOT the global environment
+  ;; and no closures were created in this frame.
+  (when (and (not (null? env))
+             (not (eq? env the-global-environment))
+             (= *frame-closures-count* 0))
+    (set! *tail-call-env* env)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;                    WAIT FOR STEP
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -434,7 +462,11 @@
                                  "L" (number->string src-line))
                                 (string-append
                                  "E" (number->string
-                                      *next-environment-number*)))))
+                                      *next-environment-number*))))
+                ;; Capture tail-call env BEFORE creating the new frame
+                (saved-tail-env *tail-call-env*))
+           ;; Clear tail-call state for the new frame
+           (set! *tail-call-env* #f)
            (wait-for-confirmation
             (string-append
              "APPLY " (viewed-rep procedure)
@@ -443,12 +475,22 @@
                                  (viewed-rep (safen-list x))) arguments))
              ", making new " frame-name
              "."))
-           (eval-sequence (env-procedure-body procedure)
-                          (extend-environment
+           (let ((new-env (extend-environment
                            (parameters procedure)
                            arguments
                            apply-env
-                           ':name frame-name))))
+                           ':name frame-name)))
+             ;; TCO: remove the dead tail-call frame from the diagram.
+             ;; The old frame is unreachable because the tail call
+             ;; replaced it — no code will return to it.
+             (when (and saved-tail-env *meta-observer*)
+               (let ((old-fid (frame-info-id
+                               (frame-info-of saved-tail-env))))
+                 ((observer-on-tail-gc *meta-observer*) old-fid)))
+             ;; Reset closure counter for the new frame's body
+             (set! *frame-closures-count* 0)
+             (eval-sequence (env-procedure-body procedure)
+                            new-env))))
         (else (error "Unknown procedure type -- apply" procedure))))
 
 (define (lazy-deextern x)
@@ -553,7 +595,11 @@
 
 ;;; lambda — make-procedure
 ;;; Creates a compound procedure representation and notifies observer.
+;;; Increments *frame-closures-count* so that tail-call optimization
+;;; knows a closure was created in the current frame (and therefore
+;;; the frame might still be referenced by the closure).
 (define (make-procedure lambda-exp env)
+  (set! *frame-closures-count* (+ *frame-closures-count* 1))
   (let* ((fi (frame-info-of env))
          ;; Reconstruct clean lambda sexp: the car of lambda-exp is the
          ;; special-form object (special-form lambda), not the symbol lambda.
@@ -604,10 +650,10 @@
       (if (view-eval (cadr exp) env)
           (if (null? (cddr exp))
               (error "Not enough IF clauses")
-              (begin (reduce)
+              (begin (reduce-with-env env)
                      (view-eval (caddr exp) env)))
           (if (not (null? (cdddr exp)))
-              (begin (reduce)
+              (begin (reduce-with-env env)
                      (view-eval (cadddr exp) env))
               (after-eval (if #f #f))))))
 
@@ -621,7 +667,7 @@
         (else #t))
   (let ((bindings (cadr exp))
         (body (cddr exp)))
-    (reduce)
+    (reduce-with-env env)
     (view-eval (cons (cons 'lambda (cons (map car bindings) body))
                      (map cadr bindings))
                env)))
@@ -636,7 +682,7 @@
         (else #t))
   (let ((bindings (cadr exp))
         (body (cddr exp)))
-    (reduce)
+    (reduce-with-env env)
     (if (null? (cdr bindings))
         (view-eval (cons (cons 'lambda (cons (map car bindings) body))
                          (map cadr bindings))
@@ -655,7 +701,7 @@
 (define (eval-and preds env)
   (cond ((null? preds) (after-eval #t))
         ((null? (cdr preds))
-         (reduce)
+         (reduce-with-env env)
          (view-eval (car preds) env))
         ((not (view-eval (car preds) env)) (after-eval #f))
         (else (eval-and (cdr preds) env))))
@@ -668,7 +714,7 @@
 (define (eval-or preds env)
   (cond ((null? preds) (after-eval #f))
         ((null? (cdr preds))
-         (reduce)
+         (reduce-with-env env)
          (view-eval (car preds) env))
         ((let ((val (view-eval (car preds) env)))
            (if val (after-eval val) #f)))
@@ -677,7 +723,7 @@
 ;;; sequence (begin)
 ;;; (Max Hailperin: last-exp case uses (reduce) for tail-recursion)
 (define (eval-sequence exps env)
-  (cond ((last-exp? exps) (reduce) (view-eval (first-exp exps) env))
+  (cond ((last-exp? exps) (reduce-with-env env) (view-eval (first-exp exps) env))
         (else (view-eval (first-exp exps) env)
               (eval-sequence (rest-exps exps) env))))
 
@@ -754,6 +800,8 @@
   (set! *current-repl-line* 0)
   (set! *lambda-line-queue* '())
   (set! *next-environment-number* 1)
+  (set! *tail-call-env* #f)
+  (set! *frame-closures-count* 0)
   (set! view:confirmation #f)
   (set! view:continue #f)
   (set! view:use-stepping? #f)

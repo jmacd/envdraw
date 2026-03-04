@@ -29,7 +29,8 @@
    on-error
    on-gc-mark
    on-gc-sweep
-   on-request-render)
+   on-request-render
+   on-tail-gc)
   eval-observer?
   ;; (env-name parent-env width height) → frame-id
   (on-frame-created       observer-on-frame-created)
@@ -58,7 +59,9 @@
   ;; (object-id) → void
   (on-gc-sweep            observer-on-gc-sweep)
   ;; () → void
-  (on-request-render      observer-on-request-render))
+  (on-request-render      observer-on-request-render)
+  ;; (frame-id) → void  (tail-call optimization: remove dead frame)
+  (on-tail-gc             observer-on-tail-gc))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;                    NULL OBSERVER (for testing)
@@ -120,6 +123,9 @@
      (values))
    ;; on-request-render
    (lambda ()
+     (values))
+   ;; on-tail-gc
+   (lambda (frame-id)
      (values))))
 
 ;;; A trace observer that prints eval trace to stdout (for debugging).
@@ -166,4 +172,6 @@
      ;; on-gc-sweep
      (observer-on-gc-sweep null-obs)
      ;; on-request-render
-     (observer-on-request-render null-obs))))
+     (observer-on-request-render null-obs)
+     ;; on-tail-gc
+     (observer-on-tail-gc null-obs))))
