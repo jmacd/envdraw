@@ -210,6 +210,11 @@
 ;;; The current observer (set at startup)
 (define *meta-observer* #f)
 
+;;; Whether the global frame has been emitted to the observer (D3).
+;;; We suppress it during boot so the landing page shows the empty state;
+;;; the frame is lazily emitted on the first evaluation.
+(define *global-frame-emitted* #f)
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;               SOURCE-LINE SCANNING HELPERS
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -793,7 +798,9 @@
 
 (define (envdraw-init obs)
   (set! *meta-observer* obs)
-  (set! *current-observer* obs)
+  ;; Don't set *current-observer* yet — setup-environment would
+  ;; emit the global frame to D3 immediately, causing the landing
+  ;; page to show the frame instead of the empty state.
   (set! the-eval-stack (make-stack))
   (set! last-error-stack #f)
   (set! *eval-indent-level* 0)
@@ -806,14 +813,42 @@
   (set! view:continue #f)
   (set! view:use-stepping? #f)
   (set! the-global-environment (setup-environment obs))
+  ;; Now enable the observer for subsequent evaluations
+  (set! *current-observer* obs)
+  (set! *global-frame-emitted* #f)
   ;; Return the REPL evaluator procedure
   envdraw-eval-one)
+
+;;; Reset the evaluator to a clean state (called on Clear).
+;;; Re-initializes the global environment and all counters so the
+;;; next evaluation starts fresh, with the global frame lazily
+;;; emitted again.
+(define (envdraw-clear!)
+  (reset-web-observer-state!)
+  (envdraw-init *meta-observer*))
+
+;;; Lazily emit the global environment frame to D3.
+;;; Called before the first evaluation so the frame appears
+;;; only when the user actually enters an expression.
+(define (emit-global-frame!)
+  (unless *global-frame-emitted*
+    (set! *global-frame-emitted* #t)
+    (when *current-observer*
+      (let ((fi (frame-info-of the-global-environment)))
+        (let ((obs-id ((observer-on-frame-created *current-observer*)
+                       (frame-info-name fi)
+                       (frame-info-parent-id fi)
+                       (frame-info-width fi)
+                       (frame-info-height fi))))
+          (when (string? obs-id)
+            (set-frame-info-id! fi obs-id)))))))
 
 ;;; Evaluate one or more expressions (called from the REPL).
 ;;; When multiple expressions are present in the input string,
 ;;; all are read and evaluated in order; the result of the last
 ;;; expression is returned.
 (define (envdraw-eval-one input-string)
+  (emit-global-frame!)
   (stack-empty! the-eval-stack)
   (set! *eval-indent-level* 0)
   (let* ((num-input-lines (+ 1 (count-newlines input-string)))

@@ -154,6 +154,9 @@
 (define-foreign register-gc-handler "app" "registerGCHandler"
   (ref null extern) -> none)
 
+(define-foreign register-clear-handler "app" "registerClearHandler"
+  (ref null extern) -> none)
+
 ;;; Output functions — Scheme calls JS to update DOM
 (define-foreign trace-append "app" "traceAppend"
   (ref string) -> none)
@@ -456,8 +459,10 @@
      (procedure->external
       (lambda () (handle-gc!))))
 
-    ;; Initial render — show the GLOBAL ENVIRONMENT frame
-    (request-render!)
+    ;; Clear: reset evaluator and observer state
+    (register-clear-handler
+     (procedure->external
+      (lambda () (envdraw-clear!))))
 
     (console-log "EnvDraw: ready.")))
 

@@ -68,6 +68,20 @@
     (set! *color-index* (+ 1 *color-index*))
     c))
 
+;;; Reset all web-observer mutable state (called on Clear).
+(define (reset-web-observer-state!)
+  (set! *next-id* 0)
+  (set! *frame-ids* '())
+  (set! *proc-ids* '())
+  (set! *pair-ids* '())
+  (set! *pair-atom-ids* '())
+  (set! *pair-null-ids* '())
+  (set! *proc-frame-map* '())
+  (set! *pair-seen* '())
+  (set! *current-tree-node-ids* '())
+  (set! *color-index* 0)
+  (set! *pair-tree-registry* '()))
+
 ;;; Variables required by envdraw.scm boot! (kept for compatibility)
 ;;; These are effectively unused with D3 rendering.
 (define *render-ctx* #f)

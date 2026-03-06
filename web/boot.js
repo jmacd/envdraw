@@ -44,6 +44,7 @@ const callbacks = {
   mouseDown: null,
   mouseMove: null,
   mouseUp: null,
+  clear: null,
 };
 
 const view = {
@@ -131,6 +132,7 @@ const appImports = {
   registerMouseMoveHandler(fn)  { callbacks.mouseMove = fn; },
   registerMouseUpHandler(fn)    { callbacks.mouseUp = fn; },
   registerGCHandler(fn)          { callbacks.gc = fn; },
+  registerClearHandler(fn)       { callbacks.clear = fn; },
 
   traceAppend(text) {
     text = schemeToString(text) || '';
@@ -704,6 +706,10 @@ function wireEvents() {
     view.diagramExists = false;
     updateZoomLabel();
     document.getElementById("empty-state").classList.remove("hidden");
+    // Reset Scheme evaluator state so the global frame is re-emitted
+    if (callbacks.clear) {
+      try { callbacks.clear(); } catch (e) { console.error("clear:", e); }
+    }
   });
 
   // ── Trace panel toggle ──
