@@ -79,12 +79,12 @@
 ;;;                     DEFAULT PALETTE
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;;; These match the original EnvDraw color scheme
-(define color-palegreen    (make-color 152 251 152))
-(define color-lemonchiffon (make-color 255 250 205))
-(define color-lightblue    (make-color 173 216 230))
-(define color-lightyellow  (make-color 255 255 224))
-(define color-pink         (make-color 255 192 203))
-(define color-lavender     (make-color 230 230 250))
-(define color-white        (make-color 255 255 255))
-(define color-black        (make-color 0 0 0))
+;;; Muted cool pastels — soft blues, greens, slate
+(define color-ice-blue    (make-color 198 222 241))
+(define color-seafoam     (make-color 189 224 215))
+(define color-cool-sage   (make-color 200 219 199))
+(define color-pale-steel  (make-color 208 213 225))
+(define color-soft-teal   (make-color 183 218 224))
+(define color-mist        (make-color 214 220 235))
+(define color-white       (make-color 255 255 255))
+(define color-black       (make-color 0 0 0))

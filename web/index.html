@@ -56,9 +56,9 @@
           <div class="empty-title">No diagram yet</div>
           <div class="empty-hint">Type a Scheme expression below to begin</div>
           <div class="empty-examples">
-            <code>(define x 42)</code>
             <code>(define (square n) (* n n))</code>
-            <code>(square 5)</code>
+            <code>(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))</code>
+            <code>(define (tree d) (if (= d 0) 0 (cons (tree (- d 1)) (tree (- d 1)))))</code>
           </div>
         </div>
       </div>
@@ -89,7 +89,7 @@
     </div>
 
   </div>
-  <script type="text/javascript" src="reflect.js"></script>
+  <script type="text/javascript" src="hoot/reflect.js"></script>
   <script type="text/javascript" src="d3-diagram.js"></script>
   <script>
     // Cache-bust boot.js — bump version when boot.js changes

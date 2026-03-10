@@ -798,9 +798,9 @@
 
 (define (envdraw-init obs)
   (set! *meta-observer* obs)
-  ;; Don't set *current-observer* yet — setup-environment would
-  ;; emit the global frame to D3 immediately, causing the landing
-  ;; page to show the frame instead of the empty state.
+  ;; Clear *current-observer* so setup-environment won't emit the
+  ;; global frame to D3 — we want the landing page empty state.
+  (set! *current-observer* #f)
   (set! the-eval-stack (make-stack))
   (set! last-error-stack #f)
   (set! *eval-indent-level* 0)

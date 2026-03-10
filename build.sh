@@ -2,16 +2,13 @@
 # build.sh — Build EnvDraw Wasm artifacts
 #
 # Prerequisites:
-#   Guile 3.0 + Guile Hoot 0.6.1
+#   Guile 3.0 + Guile Hoot
 #   macOS:  brew install guile guile-hoot
 #
 # Usage:
-#   ./build.sh          # build web/envdraw.wasm
-#   ./build.sh clean    # remove envdraw.wasm (keeps runtime .wasm files)
+#   ./build.sh          # build web/envdraw.wasm + bundle Hoot runtime
+#   ./build.sh clean    # remove build outputs
 #   ./build.sh serve    # start local dev server on :8088
-#
-# The Hoot runtime files (reflect.wasm, wtf8.wasm) are checked into
-# web/ and do not need rebuilding.
 
 set -e
 
@@ -27,10 +24,12 @@ compile_one() {
     local out="${src%.scm}.wasm"
     echo "==> Compiling $out ..."
     time guild compile-wasm \
+        --bundle=web/hoot \
         -L web -L . \
         -o "$out" \
         "$src"
     ls -lh "$out" | awk '{print "    Output:", $5, $9}'
+    echo "    Hoot runtime bundled into web/hoot/"
     echo ""
 }
 
@@ -39,8 +38,9 @@ case "${1:-main}" in
         compile_one web/envdraw.scm
         ;;
     clean)
-        echo "==> Removing envdraw.wasm"
+        echo "==> Removing build outputs"
         rm -f web/envdraw.wasm
+        rm -f web/hoot/reflect.js web/hoot/reflect.wasm web/hoot/wtf8.wasm
         echo "    Done."
         ;;
     serve)

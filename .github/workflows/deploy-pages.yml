@@ -32,8 +32,8 @@ jobs:
       - name: Verify required files exist
         run: |
           echo "Checking required site files..."
-          for f in index.html boot.js reflect.js d3-diagram.js style.css \
-                   reflect.wasm wtf8.wasm envdraw.wasm; do
+          for f in index.html boot.js d3-diagram.js style.css envdraw.wasm \
+                   hoot/reflect.js hoot/reflect.wasm hoot/wtf8.wasm; do
             if [ ! -f "web/$f" ]; then
               echo "ERROR: missing web/$f"
               exit 1

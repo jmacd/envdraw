@@ -1,6 +1,10 @@
 # Guile compilation cache
 guile-*/
 
+# Hoot runtime (copied by build.sh --bundle, force-committed for CI deploy)
+# Use "git add -f web/hoot/" after building to commit updated runtime files.
+#web/hoot/
+
 # Editor
 .vscode/
 

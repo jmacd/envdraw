@@ -39,10 +39,10 @@ const EnvDiagram = (() => {
   const PAIR_ATOM_PAD = 6;  // padding around atom labels
   const ANIM_DURATION = 400;
 
-  // Color palette for frames
+  // Color palette for frames — muted cool pastels
   const COLORS = [
-    "#d4edda", "#fff3cd", "#cce5ff",
-    "#fefcbf", "#f8d7da", "#e8daef"
+    "#c6def1", "#bde0d7", "#c8dbc7",
+    "#d0d5e1", "#b7dae0", "#d6dceb"
   ];
   let colorIndex = 0;
   function nextColor() {
@@ -568,7 +568,7 @@ const EnvDiagram = (() => {
   function renderFrame(g, d) {
     const w = d.width || FRAME_MIN_W;
     const h = d.height || 60;
-    const color = d.color || "#d4edda";
+    const color = d.color || "#c6def1";
     const stroke = darken(color);
 
     // Background rect
@@ -591,7 +591,8 @@ const EnvDiagram = (() => {
     // Title
     g.append("text")
       .attr("class", "frame-title")
-      .attr("x", 8).attr("y", 16)
+      .attr("x", w / 2).attr("y", 16)
+      .attr("text-anchor", "middle")
       .attr("font-size", "11px")
       .attr("font-weight", "bold")
       .attr("font-family", "sans-serif")
@@ -667,7 +668,7 @@ const EnvDiagram = (() => {
   function renderProcedure(g, d) {
     const w = PROC_CELL_W * 2;
     const h = PROC_CELL_H;
-    const color = d.color || "#cce5ff";
+    const color = d.color || "#b7dae0";
     const stroke = darken(color);
 
     // Background rect (cons-pair style)

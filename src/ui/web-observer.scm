@@ -59,8 +59,8 @@
 ;;; Current color (cycles through palette)
 (define *color-index* 0)
 (define *color-palette*
-  (list color-palegreen color-lemonchiffon color-lightblue
-        color-lightyellow color-pink color-lavender))
+  (list color-ice-blue color-seafoam color-cool-sage
+        color-pale-steel color-soft-teal color-mist))
 
 (define (next-color!)
   (let ((c (list-ref *color-palette*

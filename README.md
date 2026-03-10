@@ -14,20 +14,23 @@ force-directed SVG graph.
 
 ```
 Browser
-├── index.html          loads D3 v7 (CDN), reflect.js, d3-diagram.js, boot.js
-├── boot.js             loads envdraw.wasm, wires REPL & toolbar, bridges FFI
-├── d3-diagram.js       D3-force SVG rendering (frames, bindings, closures)
-├── reflect.js          Guile Hoot WebAssembly runtime
+├── index.html              loads D3 v7 (CDN), hoot/reflect.js, d3-diagram.js, boot.js
+├── boot.js                 loads envdraw.wasm, wires REPL & toolbar, bridges FFI
+├── d3-diagram.js           D3-force SVG rendering (frames, bindings, closures)
+├── hoot/                   Guile Hoot runtime (copied by build, not source)
+│   ├── reflect.js
+│   ├── reflect.wasm
+│   └── wtf8.wasm
 └── style.css
 
 Scheme → WebAssembly (via Guile Hoot)
-├── web/envdraw.scm     entry point: FFI bindings, primitives, boot!
-├── src/core/meta.scm   metacircular evaluator (view-eval, view-apply)
-├── src/core/environments.scm   environment/frame/binding model
-├── src/core/eval-observer.scm  observer interface
-├── src/core/stacks.scm         stack data structures
-├── src/model/color.scm         RGB color utilities
-└── src/ui/web-observer.scm     emits D3 FFI calls for diagram updates
+├── web/envdraw.scm                    entry point: FFI bindings, primitives, boot!
+├── src/core/meta.scm                  metacircular evaluator (view-eval, view-apply)
+├── src/core/environments.scm          environment/frame/binding model
+├── src/core/eval-observer.scm         observer interface
+├── src/core/stacks.scm                stack data structures
+├── src/model/color.scm                RGB color utilities
+└── src/ui/web-observer.scm            emits D3 FFI calls for diagram updates
 ```
 
 The evaluator runs entirely in WebAssembly. As it creates frames and
@@ -36,56 +39,80 @@ bindings, the observer emits FFI calls that `boot.js` bridges to the
 
 ## Prerequisites
 
-To **rebuild** `envdraw.wasm` you need:
-
 - [Guile](https://www.gnu.org/software/guile/) 3.0
-- [Guile Hoot](https://spritely.institute/hoot/) 0.6.1
+- [Guile Hoot](https://spritely.institute/hoot/)
 
 On macOS with Homebrew:
 
 ```sh
+brew tap aconchillo/guile
 brew install guile guile-hoot
 ```
 
-> **Note:** `envdraw.wasm` and the Hoot runtime files (`reflect.wasm`,
-> `wtf8.wasm`) are checked into the repository, so you only need the
-> toolchain if you modify the Scheme sources.
+If you only change JS, CSS, or HTML files, you do not need Guile or Hoot —
+skip straight to `./build.sh serve`.
 
 ## Building
 
 ```sh
-./build.sh          # compile web/envdraw.wasm
-./build.sh clean    # remove envdraw.wasm
+./build.sh          # compile web/envdraw.wasm and bundle Hoot runtime
+./build.sh clean    # remove envdraw.wasm and bundled runtime files
 ./build.sh serve    # start local dev server on http://localhost:8088/
 ```
 
 The build compiles `web/envdraw.scm` (which `(include)`s all `src/` files)
-to WebAssembly:
+to WebAssembly and copies the Hoot runtime into `web/hoot/`:
 
 ```sh
-guild compile-wasm -L web -L . -o web/envdraw.wasm web/envdraw.scm
+guild compile-wasm --bundle=web/hoot -L web -L . -o web/envdraw.wasm web/envdraw.scm
 ```
+
+The `--bundle` flag copies `reflect.js`, `reflect.wasm`, and `wtf8.wasm`
+from your Hoot installation. These files are gitignored — they are
+regenerated on each build.
+
+### Edit → rebuild cycle
+
+1. Edit `.scm` file(s) under `src/` or `web/envdraw.scm`
+2. Run `./build.sh`
+3. Hard-refresh the browser (Cmd+Shift+R)
+
+For JS/CSS/HTML changes, just save and refresh — no build step needed.
 
 ## Running locally
 
 ```sh
-./build.sh serve
-# open http://localhost:8088/
+./build.sh          # first build (or after Scheme changes)
+./build.sh serve    # open http://localhost:8088/
 ```
 
 Requires a browser with WebAssembly GC and tail-call support
-(Chrome 119+ / Firefox 120+).
+(Chrome 119+ / Firefox 120+ / Safari 18.2+).
 
 ## Deployment
 
-Pushes to `main` automatically deploy `web/` to GitHub Pages via the
-workflow in `.github/workflows/deploy-pages.yml`.
+Pushes to `main` automatically deploy `web/` to GitHub Pages via
+`.github/workflows/deploy-pages.yml`. The workflow validates that all
+required files exist, then uploads `web/` as a static site.
 
-## Browser requirements
+Since Guile Hoot is not available in CI, all build outputs must be
+committed before pushing:
 
-- WebAssembly GC proposal
-- WebAssembly tail calls
-- Chrome 119+ / Firefox 120+ / Safari 18.2+
+1. Edit Scheme source locally
+2. Run `./build.sh`
+3. Test with `./build.sh serve`
+4. Commit the `.scm` changes, `web/envdraw.wasm`, and the `web/hoot/` files
+5. Push to `main`
+
+### Upgrading Hoot
+
+```sh
+brew upgrade guile-hoot
+./build.sh                # --bundle copies updated runtime automatically
+```
+
+Test locally, then commit the updated `web/envdraw.wasm` and `web/hoot/`
+files.
 
 ## History
 

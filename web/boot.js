@@ -535,19 +535,11 @@ function wireEvents() {
   });
 
   // ── REPL ──
-  replInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      // Shift+Enter: always insert newline (let default happen)
-      if (e.shiftKey) return;
-
+  function submitInput() {
       const text = replInput.value.trim();
-      if (!text) { e.preventDefault(); return; }
-
-      // If expression is incomplete (unbalanced parens), insert newline
+      if (!text) return;
       if (!isExpressionComplete(text)) return;
 
-      // Expression complete — submit
-      e.preventDefault();
       const fullText = replInput.value.trimEnd();
       const inputLines = fullText.split('\n');
       const numLines = inputLines.length;
@@ -580,11 +572,7 @@ function wireEvents() {
         try {
           const res = callbacks.eval(fullText);
           resultText = schemeToString(res);
-          // Auto-GC after successful evaluation (like the original's gc-view)
-          // This cleans up any frames that became unreachable during eval.
-          if (callbacks.gc && !stepping.active) {
-            try { callbacks.gc(); } catch (e) { console.error("auto-gc:", e); }
-          }
+
         } catch (err) {
           console.error("eval error:", err);
           resultText = err.message || "unknown error";
@@ -625,6 +613,21 @@ function wireEvents() {
         updateLineNumGutter();
         if (!isError) setStatus("Ready", "ready");
       }
+  }
+
+  replInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      // Shift+Enter: always insert newline (let default happen)
+      if (e.shiftKey) return;
+
+      const text = replInput.value.trim();
+      if (!text) { e.preventDefault(); return; }
+
+      // If expression is incomplete (unbalanced parens), insert newline
+      if (!isExpressionComplete(text)) return;
+
+      e.preventDefault();
+      submitInput();
     } else if (e.key === "ArrowUp") {
       // Only navigate history if cursor is at the very start
       if (replInput.selectionStart === 0 && replInput.selectionEnd === 0) {
@@ -728,6 +731,7 @@ function wireEvents() {
   document.querySelectorAll(".empty-examples code").forEach((el) => {
     el.addEventListener("click", () => {
       replInput.value = el.textContent;
+      submitInput();
       replInput.focus();
     });
   });
@@ -780,7 +784,7 @@ async function boot() {
 
   try {
     await Scheme.load_main("envdraw.wasm?" + Date.now(), {
-      reflect_wasm_dir: ".",
+      reflect_wasm_dir: "hoot",
       user_imports: {
         ctx: ctxImports,
         app: appImports,
