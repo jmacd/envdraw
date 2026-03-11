@@ -143,7 +143,7 @@ guile -c '(use-modules (hoot config)) (display %version) (newline)'
 ### Build the Wasm module
 
 ```sh
-./build.sh               # compiles web/envdraw.wasm (~30s on M1)
+./build.sh               # compiles web/envdraw.wasm (~30s on M1) + generates web/examples.js
 ```
 
 This runs:
@@ -154,6 +154,18 @@ guild compile-wasm -L web -L . -o web/envdraw.wasm web/envdraw.scm
 
 The `-L web -L .` flags set Guile's load path so `(include "../src/...")` paths
 resolve correctly from `web/envdraw.scm`.
+
+It also generates `web/examples.js` from `examples/*.scm` (see below).
+
+### Rebuild examples only
+
+```sh
+./build.sh examples       # regenerates web/examples.js from examples/*.scm
+```
+
+This reads each `.scm` file in `examples/`, JSON-encodes its contents, and
+writes `web/examples.js` — a static array consumed by the toolbar dropdown.
+No Wasm recompilation needed.  Use this after adding or editing example files.
 
 ### Run the dev server
 
@@ -178,7 +190,7 @@ clients pick up the new version without hard-refresh.
 ### Clean
 
 ```sh
-./build.sh clean          # removes web/envdraw.wasm only
+./build.sh clean          # removes web/envdraw.wasm and web/examples.js
 ```
 
 This does **not** remove `reflect.wasm` or `wtf8.wasm` (they are Hoot runtime

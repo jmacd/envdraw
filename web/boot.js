@@ -727,13 +727,25 @@ function wireEvents() {
     document.getElementById("trace-output").innerHTML = "";
   });
 
-  // ── Empty state examples — click to insert ──
-  document.querySelectorAll(".empty-examples code").forEach((el) => {
-    el.addEventListener("click", () => {
-      replInput.value = el.textContent;
-      submitInput();
-      replInput.focus();
+  // ── Examples dropdown ──
+  const selExamples = document.getElementById("sel-examples");
+  if (window.ENVDRAW_EXAMPLES) {
+    window.ENVDRAW_EXAMPLES.forEach((ex) => {
+      const opt = document.createElement("option");
+      opt.value = ex.name;
+      opt.textContent = ex.name;
+      selExamples.appendChild(opt);
     });
+  }
+  selExamples.addEventListener("change", () => {
+    const name = selExamples.value;
+    if (!name) return;
+    const ex = window.ENVDRAW_EXAMPLES.find((e) => e.name === name);
+    if (!ex) return;
+    selExamples.value = "";
+    replInput.value = ex.code;
+    submitInput();
+    replInput.focus();
   });
 
   // ── Keyboard shortcuts ──
