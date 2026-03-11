@@ -296,7 +296,7 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define special-forms-list
-  '(quote define set! lambda cond if let let* and or begin eval apply))
+  '(quote define set! lambda cond if when let let* and or begin eval apply))
 
 (define (define-special-forms! env)
   (for-each
@@ -535,6 +535,7 @@
       ((lambda) (after-eval (make-procedure exp env)))
       ((cond)   (eval-cond (clauses exp) env))
       ((if)     (eval-if exp env))
+      ((when)   (eval-when exp env))
       ((let)    (eval-let exp env))
       ((let*)   (eval-let* exp env))
       ((and)    (eval-and (predicates exp) env))
@@ -661,6 +662,15 @@
               (begin (reduce-with-env env)
                      (view-eval (cadddr exp) env))
               (after-eval (if #f #f))))))
+
+;;; when — (when test body ...) → evaluate body as sequence if test is true
+(define (eval-when exp env)
+  (if (null? (cdr exp))
+      (error "Empty WHEN statement")
+      (if (view-eval (cadr exp) env)
+          (begin (reduce-with-env env)
+                 (eval-sequence (cddr exp) env))
+          (after-eval (if #f #f)))))
 
 ;;; let
 ;;; (Max Hailperin: evaluating let as application is a reduction)
