@@ -9,10 +9,13 @@
 (define (node-set-right! node right) (set-cdr! node right))
 (define (node-set-value! node value) (set-car! (car node) value))
 
+(define *maxkey* 'maxkey)
+(define *tailkey* 'tailkey)
+
 (define (make-tree)
-  (let* ((tail (make-node #t #t #t))
-         (bottom (make-node #t #t #t))
-         (head (make-node #t tail bottom)))
+  (let* ((tail (make-node *tailkey* #t #t))
+         (bottom (make-node *tailkey* #t #t))
+         (head (make-node *maxkey* tail bottom)))
     (set-cdr! tail tail)
     (set-cdr! bottom bottom)
     (set-cdr! (car bottom) bottom)
@@ -25,11 +28,14 @@
 
 (define (tree-depth tree node)
   (if (eq? (node-down node) (tree-bottom tree))
-      1
+      0
       (+ 1 (tree-depth tree (node-down node)))))
 
 (define (greater? a b)
-  (and (not (boolean? b)) (> a b)))
+  (cond
+   ((eq? b *tailkey*) #f)
+   ((eq? b *maxkey*) #f)
+   (else (> a b))))
 
 (define (insert-tree tree value)
   (node-set-value! (tree-bottom tree) value)
@@ -37,34 +43,28 @@
       (update-tail tree)))
 
 (define (insert-node tree node value)
-  (display "INSERT NODE\n")
   (or (insert-skip tree node value)
-      (and (not (eq? node (tree-bottom tree)))
+      (and (not (eq? (node-down node) (tree-bottom tree)))
            (insert-node tree (node-down node) value))))
 
 (define (update-tail tree)
-  (or (not (eq? (node-right (tree-head tree)) (tree-tail tree)))
-      (let ((newhead (make-node #t (tree-tail tree) (tree-head tree))))
-        (display "NEW HEAD\n")
-        (tree-set-head! tree newhead)
-        #t
-        )))
+  (when (not (eq? (node-right (tree-head tree)) (tree-tail tree)))
+    (let ((newhead (make-node *maxkey* (tree-tail tree) (tree-head tree))))
+      (tree-set-head! tree newhead)))
+  #t)
 
 (define (insert-skip tree node value)
   (cond
    ((greater? value (node-value node))
     ;; skip right
-    (display "SKIP RIGHT\n")
     (insert-skip tree (node-right node) value))
    ((and (eq? (tree-bottom tree) (node-down node))
          (eq? (node-value node) value))
-    (display "EXISTING\n")
     ;; existing match
     #t)
    ((or (eq? (tree-bottom tree) (node-down node))
         (eq? (node-value node) (node-value (node-right (node-right (node-right (node-down node)))))))
     ;; full child case
-    (display "BOTTOM OR FULL CHILD\n")
     (node-set-right! node (make-node (node-value node)
                                      (node-right node)
                                      (node-right (node-right (node-down node)))))
@@ -73,22 +73,17 @@
     )
    ;; child is not full
    (else
-
-    (display "NOT FULL\n")
     #f)
    )
   )
 
 (define t (make-tree))
-(display "ONE\n")
 (insert-tree t 20)
-;(display "TWO\n")
-;(insert-tree t 30)
-;(display "THREE\n")
-;(insert-tree t 40)
+(insert-tree t 30)
+(insert-tree t 40)
+(insert-tree t 50)
+(insert-tree t 60)
+(insert-tree t 70)
 
-;(insert-tree t 50)
-;(insert-tree t 60)
-;(insert-tree t 70)
 (display (tree-depth t (tree-head t)))
-
+(display "\n")
