@@ -172,12 +172,19 @@ const EnvDiagram = (() => {
 
     // Initialize force simulation
     simulation = d3.forceSimulation(nodes)
-      .force("charge", d3.forceManyBody().strength(-150))
+      .force("charge", d3.forceManyBody().strength(d => {
+        // Pair nodes are tiny (30px) and numerous — minimal repulsion.
+        if (d.type === "pair" || d.type === "pair-atom" || d.type === "pair-null") return -5;
+        if (d.type === "procedure") return -60;
+        return -150;  // frames
+      }))
       .force("collide", d3.forceCollide().radius(d => {
         if (d.type === "frame")
           return Math.max(d.width, d.height) * 0.6 + 20;
         if (d.type === "pair-null" || d.type === "pair-atom")
-          return Math.max(d.width || 14, d.height || 14) * 0.5 + 4;
+          return Math.max(d.width || 14, d.height || 14) * 0.5 + 2;
+        if (d.type === "pair")
+          return Math.max(d.width || 60, d.height || 48) * 0.5 + 2;
         return Math.max(d.width || 60, d.height || 48) * 0.5 + 10;
       }).strength(0.8).iterations(2))
       .force("link", d3.forceLink(edges)
@@ -186,16 +193,16 @@ const EnvDiagram = (() => {
           if (d.edgeType === "env") return 160;
           if (d.edgeType === "proc-env") return 120;
           if (d.edgeType === "binding") return 130;
-          if (d.edgeType === "car") return 65;
-          if (d.edgeType === "cdr") return 70;
+          if (d.edgeType === "car") return 40;
+          if (d.edgeType === "cdr") return 45;
           return 120;
         })
         .strength(d => {
           if (d.edgeType === "env") return 0.2;
           if (d.edgeType === "binding") return 0.15;
           if (d.edgeType === "proc-env") return 0.15;
-          if (d.edgeType === "car") return 0.6;
-          if (d.edgeType === "cdr") return 0.6;
+          if (d.edgeType === "car") return 0.8;
+          if (d.edgeType === "cdr") return 0.8;
           return 0.2;
         })
       )
@@ -220,7 +227,7 @@ const EnvDiagram = (() => {
         if (d.type === "frame") return 1.0;
         if (d.type === "procedure") return 0.7;
         // Weak Y for pair nodes — link force does the positioning
-        if (d.type === "pair" || d.type === "pair-atom" || d.type === "pair-null") return 0.02;
+        if (d.type === "pair" || d.type === "pair-atom" || d.type === "pair-null") return 0.08;
         return 0.3;
       }))
       .force("x", d3.forceX().x(d => {
@@ -232,7 +239,7 @@ const EnvDiagram = (() => {
         return width / 2;
       }).strength(d => {
         if (d.type === "procedure") return 0.12;
-        if (d.type === "pair" || d.type === "pair-atom" || d.type === "pair-null") return 0.02;
+        if (d.type === "pair" || d.type === "pair-atom" || d.type === "pair-null") return 0.06;
         return 0.08;
       }))
       .velocityDecay(0.7)
@@ -499,19 +506,21 @@ const EnvDiagram = (() => {
     renderTimer = setTimeout(() => {
       renderTimer = null;
       simulation.stop();
+      // Scale repulsion for large diagrams — pairs always low.
+      const n = nodes.length;
+      const frameCharge = n > 100 ? -40 : n > 50 ? -80 : -150;
+      const procCharge  = n > 100 ? -15 : n > 50 ? -30 : -60;
+      simulation.force("charge").strength(d => {
+        if (d.type === "pair" || d.type === "pair-atom" || d.type === "pair-null") return -5;
+        if (d.type === "procedure") return procCharge;
+        return frameCharge;
+      });
       // Edges already hold node object references (set by pushEdge),
       // so D3's forceLink won't need to resolve string IDs.
       simulation.nodes(nodes);
       simulation.force("link").links(edges);
-      simulation.alpha(0.2).restart();
+      simulation.alpha(0.5).restart();
     }, 50);
-
-    // Auto-fit: debounce so we fit once after a burst of mutations settles
-    if (autoFitTimer !== null) clearTimeout(autoFitTimer);
-    autoFitTimer = setTimeout(() => {
-      autoFitTimer = null;
-      fitToView();
-    }, 900);
   }
 
   function renderEdges() {
@@ -1063,17 +1072,15 @@ const EnvDiagram = (() => {
       height: PAIR_CELL_H,
     };
 
-    // Find a neighboring pair or frame to position near
-    // For now, place to the right of the last-added pair or frame
-    const lastPair = nodes.filter(n => n.type === "pair").pop();
+    // Position near the most recent frame (likely the creating context),
+    // with small random jitter.  Link forces will fine-tune positions.
     const lastFrame = nodes.filter(n => n.type === "frame").pop();
-    const anchor = lastPair || lastFrame;
-    if (anchor) {
-      node.x = (anchor.x || width / 2) + 80 + (Math.random() - 0.5) * 30;
-      node.y = (anchor.y || height / 2) + (Math.random() - 0.5) * 30;
+    if (lastFrame) {
+      node.x = (lastFrame.x || width / 2) + (Math.random() - 0.5) * 60;
+      node.y = (lastFrame.y || height / 2) + 80 + (Math.random() - 0.5) * 40;
     } else {
-      node.x = width / 2 + 100;
-      node.y = height / 2;
+      node.x = width / 2 + (Math.random() - 0.5) * 60;
+      node.y = height / 2 + (Math.random() - 0.5) * 40;
     }
 
     pushNode(node);
@@ -1093,12 +1100,12 @@ const EnvDiagram = (() => {
       const py = parent.y || height / 2;
       if (type === "cdr") {
         // cdr goes to the right (list layout)
-        child.x = px + 80;
+        child.x = px + 45;
         child.y = py;
       } else {
         // car goes below (tree layout)
         child.x = px;
-        child.y = py + 60;
+        child.y = py + 40;
       }
     }
 
@@ -1118,8 +1125,15 @@ const EnvDiagram = (() => {
       height: 20,
     };
 
-    node.x = width / 2 + (Math.random() - 0.5) * 100;
-    node.y = height / 2 + (Math.random() - 0.5) * 100;
+    // Position near recent pairs; addPairEdge will refine
+    const lastPair = nodes.filter(n => n.type === "pair").pop();
+    if (lastPair) {
+      node.x = (lastPair.x || width / 2) + (Math.random() - 0.5) * 30;
+      node.y = (lastPair.y || height / 2) + (Math.random() - 0.5) * 30;
+    } else {
+      node.x = width / 2 + (Math.random() - 0.5) * 60;
+      node.y = height / 2 + (Math.random() - 0.5) * 60;
+    }
 
     pushNode(node);
     return id;
@@ -1136,8 +1150,14 @@ const EnvDiagram = (() => {
       height: 14,
     };
 
-    node.x = width / 2 + (Math.random() - 0.5) * 100;
-    node.y = height / 2 + (Math.random() - 0.5) * 100;
+    const lastPair = nodes.filter(n => n.type === "pair").pop();
+    if (lastPair) {
+      node.x = (lastPair.x || width / 2) + (Math.random() - 0.5) * 30;
+      node.y = (lastPair.y || height / 2) + (Math.random() - 0.5) * 30;
+    } else {
+      node.x = width / 2 + (Math.random() - 0.5) * 60;
+      node.y = height / 2 + (Math.random() - 0.5) * 60;
+    }
 
     pushNode(node);
     return id;
@@ -1182,6 +1202,8 @@ const EnvDiagram = (() => {
     const scaleX = (width - padX * 2) / bw;
     const scaleY = (height - padY * 2) / bh;
     const scale = Math.min(scaleX, scaleY, 2.0);
+    // Don't zoom out below 0.15 — better to show a portion than everything tiny
+    const clampedScale = Math.max(scale, 0.15);
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
 
@@ -1189,7 +1211,7 @@ const EnvDiagram = (() => {
       zoomBehavior.transform,
       d3.zoomIdentity
         .translate(width / 2, height / 2)
-        .scale(scale)
+        .scale(clampedScale)
         .translate(-cx, -cy)
     );
   }
@@ -1231,6 +1253,16 @@ const EnvDiagram = (() => {
     if (el) el.classList.add("hidden");
   }
 
+  function stats() {
+    const counts = {};
+    for (const n of nodes) {
+      counts[n.type] = (counts[n.type] || 0) + 1;
+    }
+    counts._total = nodes.length;
+    counts._edges = edges.length;
+    return counts;
+  }
+
   // ─── Export ─────────────────────────────────────────────────────
   return {
     init,
@@ -1249,5 +1281,6 @@ const EnvDiagram = (() => {
     getZoom,
     zoomBy,
     clear,
+    stats,
   };
 })();

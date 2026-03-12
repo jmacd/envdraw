@@ -1,8 +1,8 @@
 // @ts-check
 import { test, expect } from "@playwright/test";
 
-// Diagnostic test to pinpoint "wrong number of arguments" in skiplist
-test("debug: isolate skiplist wrong-args error", async ({ page }) => {
+// Diagnostic test — node/edge counts for skiplist
+test("debug: skiplist diagram stats", async ({ page }) => {
   const errors = [];
   page.on("console", (msg) => {
     if (msg.type() === "error") errors.push(msg.text());
@@ -13,9 +13,6 @@ test("debug: isolate skiplist wrong-args error", async ({ page }) => {
   await expect(status).toHaveText("Ready", { timeout: 15000 });
 
   // Load skiplist example
-  let totalLogs = 0;
-  page.on("console", () => totalLogs++);
-
   await page.evaluate(() => {
     const sel = document.getElementById("sel-examples");
     sel.value = "skiplist";
@@ -23,9 +20,8 @@ test("debug: isolate skiplist wrong-args error", async ({ page }) => {
   });
   await expect(status).toHaveText("Ready", { timeout: 30000 });
 
-  const traceLines = await page.evaluate(() =>
-    document.querySelectorAll('.trace-line').length
-  );
-  console.log(`Trace panel lines: ${traceLines}`);
-  console.log(`Total console messages: ${totalLogs}`);
+  const stats = await page.evaluate(() => EnvDiagram.stats());
+  console.log("Diagram stats:", JSON.stringify(stats, null, 2));
+  console.log("Console errors:", errors.length);
+  if (errors.length > 0) console.log("First error:", errors[0]);
 });

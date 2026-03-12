@@ -78,12 +78,7 @@
   )
 
 (define t (make-tree))
+
 (insert-tree t 20)
 (insert-tree t 30)
 (insert-tree t 40)
-(insert-tree t 50)
-(insert-tree t 60)
-(insert-tree t 70)
-
-(display (tree-depth t (tree-head t)))
-(display "\n")
