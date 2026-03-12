@@ -1,0 +1,26 @@
+{
+  "name": "envdraw",
+  "version": "1.0.0",
+  "description": "A browser-based environment diagram visualizer for Scheme, inspired by the [SICP](https://mitp-content-server.mit.edu/books/content/sectbysect/6515/sicp.zip/index.html) environment model of evaluation.",
+  "main": "index.js",
+  "directories": {
+    "example": "examples"
+  },
+  "scripts": {
+    "test": "npx playwright test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jmacd/envdraw.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/jmacd/envdraw/issues"
+  },
+  "homepage": "https://github.com/jmacd/envdraw#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.58.2"
+  }
+}

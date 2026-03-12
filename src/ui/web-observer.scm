@@ -250,6 +250,23 @@
 (define (pair-tree-entry-var-name   e) (cadddr e))
 (define (pair-tree-entry-node-ids   e) (car (cddddr e)))
 
+(define (cleanup-pair-trees-for-frame! frame-id)
+  "Remove all pair-tree entries and their D3 nodes for FRAME-ID."
+  (let loop ((reg *pair-tree-registry*) (keep '()))
+    (cond
+     ((null? reg)
+      (set! *pair-tree-registry* (reverse keep)))
+     ((equal? (pair-tree-entry-frame-id (car reg)) frame-id)
+      (let ((node-ids (pair-tree-entry-node-ids (car reg))))
+        (for-each (lambda (nid) (d3-remove-node nid)) node-ids)
+        (set! *pair-ids*
+              (filter (lambda (id) (not (member id node-ids))) *pair-ids*))
+        (set! *pair-atom-ids*
+              (filter (lambda (id) (not (member id node-ids))) *pair-atom-ids*)))
+      (loop (cdr reg) keep))
+     (else
+      (loop (cdr reg) (cons (car reg) keep))))))
+
 (define (find-pair-trees-containing cell)
   "Find all registered pair trees that contain CELL (by eq?)."
   (let loop ((reg *pair-tree-registry*) (found '()))
@@ -472,6 +489,8 @@
    ;; on-tail-gc: (frame-id) → void
    ;; Remove a frame that became unreachable due to a tail call.
    (lambda (frame-id)
+     ;; Remove pair trees owned by this frame (before removing the frame node)
+     (cleanup-pair-trees-for-frame! frame-id)
      ;; Remove the frame node from D3 (also removes edges)
      (d3-remove-node frame-id)
      ;; Remove from tracking list
@@ -509,6 +528,7 @@
             (if (member fid reachable-frames)
                 (loop (cdr ids) (cons fid keep))
                 (begin
+                  (cleanup-pair-trees-for-frame! fid)
                   (d3-remove-node fid)
                   (set! removed (+ removed 1))
                   (loop (cdr ids) keep))))))

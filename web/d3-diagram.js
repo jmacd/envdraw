@@ -220,7 +220,8 @@ const EnvDiagram = (() => {
       }))
       .velocityDecay(0.7)
       .alphaDecay(0.05)
-      .on("tick", ticked);
+      .on("tick", ticked)
+      .stop();  // Don't auto-start; scheduleRender() handles restarts
 
     // Observe container resizing
     const ro = new ResizeObserver(() => {
@@ -450,7 +451,35 @@ const EnvDiagram = (() => {
   }
 
   // ─── SVG rendering (D3 enter/update/exit) ──────────────────────
+
+  // Batch rendering: mutation methods call scheduleRender() instead of
+  // render() directly.  This coalesces all mutations from a synchronous
+  // eval into a single DOM update.
+  let renderScheduled = false;
+  function scheduleRender() {
+    if (!renderScheduled) {
+      renderScheduled = true;
+      // Stop the simulation immediately so it doesn't tick with stale data
+      // while we accumulate mutations.  It will restart in the deferred render.
+      simulation.stop();
+      setTimeout(() => {
+        renderScheduled = false;
+        render();
+      }, 0);
+    }
+  }
+
   function render() {
+    // Prune edges whose source or target node no longer exists.
+    // With batched rendering, a node may be removed after edges were added
+    // in the same synchronous eval pass.
+    const nodeIds = new Set(nodes.map(n => n.id));
+    edges = edges.filter(e => {
+      const sid = typeof e.source === "object" ? e.source.id : e.source;
+      const tid = typeof e.target === "object" ? e.target.id : e.target;
+      return nodeIds.has(sid) && nodeIds.has(tid);
+    });
+
     renderEdges();
     renderNodes();
 
@@ -458,11 +487,21 @@ const EnvDiagram = (() => {
     // multiple mutations (frame + bindings + procedure + edges) in
     // rapid succession.  Restarting on every call pumps too much
     // energy into the system.  Instead, batch them.
-    simulation.nodes(nodes);
-    simulation.force("link").links(edges);
     if (renderTimer !== null) clearTimeout(renderTimer);
     renderTimer = setTimeout(() => {
       renderTimer = null;
+      // Stop simulation while updating data to avoid tick() seeing stale refs
+      simulation.stop();
+      // Re-prune before feeding edges to the simulation — more mutations
+      // may have occurred between render() and this deferred restart.
+      const ids = new Set(nodes.map(n => n.id));
+      edges = edges.filter(e => {
+        const s = typeof e.source === "object" ? e.source.id : e.source;
+        const t = typeof e.target === "object" ? e.target.id : e.target;
+        return ids.has(s) && ids.has(t);
+      });
+      simulation.nodes(nodes);
+      simulation.force("link").links(edges);
       simulation.alpha(0.2).restart();
     }, 50);
 
@@ -901,7 +940,7 @@ const EnvDiagram = (() => {
       });
     }
 
-    render();
+    scheduleRender();
     hideEmptyState();
     return id;
   }
@@ -942,7 +981,7 @@ const EnvDiagram = (() => {
       });
     }
 
-    render();
+    scheduleRender();
     return id;
   }
 
@@ -1005,7 +1044,7 @@ const EnvDiagram = (() => {
       }
     }
 
-    render();
+    scheduleRender();
   }
 
   function updateBinding(frameId, varName, newValue, valueType) {
@@ -1042,7 +1081,7 @@ const EnvDiagram = (() => {
         binding.procId = null;
       }
     }
-    render();
+    scheduleRender();
   }
 
   // ─── Pair (cons cell) public API ─────────────────────────────────
@@ -1108,7 +1147,7 @@ const EnvDiagram = (() => {
       }
     }
 
-    render();
+    scheduleRender();
   }
 
   /** addPairAtom: create a leaf atom node for pair display */
@@ -1163,7 +1202,7 @@ const EnvDiagram = (() => {
     // Remove bindings
     delete bindings[id];
 
-    render();
+    scheduleRender();
   }
 
   function removeEdge(fromId, toId) {
@@ -1172,7 +1211,7 @@ const EnvDiagram = (() => {
       const tid = typeof e.target === "object" ? e.target.id : e.target;
       return !(sid === fromId && tid === toId);
     });
-    render();
+    scheduleRender();
   }
 
   function fitToView() {

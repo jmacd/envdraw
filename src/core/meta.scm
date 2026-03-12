@@ -121,9 +121,7 @@
                                                 " . "
                                                 (format-sexp-safe (cdr p))))))
                         ")"))
-        (else (let ((p (open-output-string)))
-                (write x p)
-                (get-output-string p)))))
+        (else "#<unspecified>")))
 
 ;;; String join (not always in R7RS-small)
 (define (string-join lst sep)
@@ -158,13 +156,20 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define (user-display object)
-  (when *meta-observer*
-    ((observer-on-write-trace *meta-observer*) (viewed-rep object))))
+  (let ((s (viewed-rep object)))
+    (when *meta-observer*
+      ((observer-on-write-trace *meta-observer*) s))
+    ;; Return a string representation so the evaluator has a defined
+    ;; value.  Hoot FFI functions with "-> none" return type produce
+    ;; a void that confuses viewed-rep / format-sexp.
+    s))
 
 (define (user-print object)
-  (when *meta-observer*
-    ((observer-on-write-trace *meta-observer*) (viewed-rep object))
-    ((observer-on-write-trace *meta-observer*) "\n")))
+  (let ((s (viewed-rep object)))
+    (when *meta-observer*
+      ((observer-on-write-trace *meta-observer*) s)
+      ((observer-on-write-trace *meta-observer*) "\n"))
+    s))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;                    GLOBAL STATE

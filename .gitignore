@@ -5,6 +5,11 @@ guile-*/
 # Use "git add -f web/hoot/" after building to commit updated runtime files.
 #web/hoot/
 
+# Node / Playwright
+node_modules/
+test-results/
+playwright-report/
+
 # Editor
 .vscode/
 
