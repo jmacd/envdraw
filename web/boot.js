@@ -178,7 +178,6 @@ const appImports = {
     const a = schemeToString(frameId), b = schemeToString(varName),
           c = schemeToString(value), d = schemeToString(valueType),
           e = schemeToString(procId);
-    console.log("[d3AddBinding]", {frameId: a, varName: b, value: c, valueType: d, procId: e, rawProcId: procId});
     if (stepping.queueing) { stepping.currentOps.push(() => EnvDiagram.addBinding(a, b, c, d, e)); return; }
     EnvDiagram.addBinding(a, b, c, d, e);
   },
@@ -225,9 +224,6 @@ const appImports = {
   },
   /** Called from Scheme when wait-for-confirmation fires (at each apply). */
   notifyStepBoundary() {
-    console.log("[step] notifyStepBoundary: queueing=", stepping.queueing,
-                "boundariesSeen=", stepping.boundariesSeen,
-                "currentOps.length=", stepping.currentOps.length);
     if (stepping.queueing) {
       stepping.boundariesSeen++;
       finalizeCurrentStep();
@@ -272,10 +268,30 @@ function realTraceAppend(text) {
 
   line.textContent = text;
   traceOutput.appendChild(line);
-  traceOutput.scrollTop = traceOutput.scrollHeight;
+
+  // Cap trace panel DOM nodes to prevent browser slowdown
+  const MAX_TRACE_LINES = 2000;
+  while (traceOutput.children.length > MAX_TRACE_LINES) {
+    traceOutput.removeChild(traceOutput.firstChild);
+  }
+
+  // Defer scroll to avoid forced layout reflow on every append
+  scheduleTraceScroll();
 
   if (text.includes("Error") || text.includes("***")) {
     showTracePanel();
+  }
+}
+
+let traceScrollScheduled = false;
+function scheduleTraceScroll() {
+  if (!traceScrollScheduled) {
+    traceScrollScheduled = true;
+    setTimeout(() => {
+      traceScrollScheduled = false;
+      const el = document.getElementById("trace-output");
+      if (el) el.scrollTop = el.scrollHeight;
+    }, 0);
   }
 }
 
@@ -286,7 +302,7 @@ function realSetResultText(text) {
   line.className = "trace-line return-line";
   line.textContent = "⇒ " + text;
   traceOutput.appendChild(line);
-  traceOutput.scrollTop = traceOutput.scrollHeight;
+  scheduleTraceScroll();
   hideEmptyState();
 }
 
@@ -558,7 +574,6 @@ function wireEvents() {
 
       // Set up step recording if stepping is active
       const wasQueueing = stepping.active;
-      console.log("[step] eval start: stepping.active=", stepping.active);
       if (wasQueueing) {
         stepping.queueing = true;
         stepping.queue = [];
@@ -591,10 +606,6 @@ function wireEvents() {
       stepping.queueing = false;
       finalizeCurrentStep();
 
-      console.log("[step] eval done: wasQueueing=", wasQueueing,
-                  "boundariesSeen=", stepping.boundariesSeen,
-                  "queue.length=", stepping.queue.length,
-                  "isError=", isError);
       if (wasQueueing && stepping.boundariesSeen > 0 && !isError) {
         // Enter stepping suspension — replay on Step/Continue clicks
         stepping.suspended = true;
@@ -603,10 +614,8 @@ function wireEvents() {
         replInput.disabled = true;
         showTracePanel();
         updateStepButtons();
-        console.log("[step] entered suspension with", stepping.queue.length, "step groups");
       } else {
         // No stepping, or no boundaries, or error — apply immediately
-        console.log("[step] NOT entering suspension");
         if (wasQueueing) flushStepQueue();
         addToReplLog(thisLine, fullText, resultText, isError);
         replLineNumber += numLines;

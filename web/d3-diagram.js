@@ -15,8 +15,9 @@
 const EnvDiagram = (() => {
   // ─── Data ────────────────────────────────────────────────────────
   let nodes = [];     // { id, type, name, parentId, width, height, color, ... }
-  let edges = [];     // { id, source, target, edgeType, ... }
+  let edges = [];     // { id, source: nodeObj, target: nodeObj, edgeType, ... }
   let bindings = {};  // frameId → [ { varName, value, valueType, procId } ]
+  const nodeMap = new Map();  // id → node object (kept in sync with nodes[])
 
   // ─── D3 handles ─────────────────────────────────────────────────
   let svg, zoomLayer, edgeGroup, nodeGroup, defs;
@@ -66,7 +67,23 @@ const EnvDiagram = (() => {
   }
 
   function nodeById(id) {
-    return nodes.find(n => n.id === id);
+    return nodeMap.get(id);
+  }
+
+  /** Add a node to the graph data structures. */
+  function pushNode(node) {
+    nodes.push(node);
+    nodeMap.set(node.id, node);
+  }
+
+  /** Add an edge, resolving source/target to node objects immediately. */
+  function pushEdge(sourceId, targetId, edgeType) {
+    const eid = edgeId(sourceId, targetId, edgeType);
+    if (edges.find(e => e.id === eid)) return;
+    const s = nodeMap.get(sourceId);
+    const t = nodeMap.get(targetId);
+    if (!s || !t) return;
+    edges.push({ id: eid, source: s, target: t, edgeType });
   }
 
   function frameBindings(frameId) {
@@ -254,8 +271,9 @@ const EnvDiagram = (() => {
 
   // ─── Edge path computation ──────────────────────────────────────
   function computeEdgePath(d) {
-    const s = typeof d.source === "object" ? d.source : nodeById(d.source);
-    const t = typeof d.target === "object" ? d.target : nodeById(d.target);
+    // source/target are always node objects (set by pushEdge)
+    const s = d.source;
+    const t = d.target;
     if (!s || !t) return "";
 
     let sx, sy, tx, ty;
@@ -470,16 +488,6 @@ const EnvDiagram = (() => {
   }
 
   function render() {
-    // Prune edges whose source or target node no longer exists.
-    // With batched rendering, a node may be removed after edges were added
-    // in the same synchronous eval pass.
-    const nodeIds = new Set(nodes.map(n => n.id));
-    edges = edges.filter(e => {
-      const sid = typeof e.source === "object" ? e.source.id : e.source;
-      const tid = typeof e.target === "object" ? e.target.id : e.target;
-      return nodeIds.has(sid) && nodeIds.has(tid);
-    });
-
     renderEdges();
     renderNodes();
 
@@ -490,16 +498,9 @@ const EnvDiagram = (() => {
     if (renderTimer !== null) clearTimeout(renderTimer);
     renderTimer = setTimeout(() => {
       renderTimer = null;
-      // Stop simulation while updating data to avoid tick() seeing stale refs
       simulation.stop();
-      // Re-prune before feeding edges to the simulation — more mutations
-      // may have occurred between render() and this deferred restart.
-      const ids = new Set(nodes.map(n => n.id));
-      edges = edges.filter(e => {
-        const s = typeof e.source === "object" ? e.source.id : e.source;
-        const t = typeof e.target === "object" ? e.target.id : e.target;
-        return ids.has(s) && ids.has(t);
-      });
+      // Edges already hold node object references (set by pushEdge),
+      // so D3's forceLink won't need to resolve string IDs.
       simulation.nodes(nodes);
       simulation.force("link").links(edges);
       simulation.alpha(0.2).restart();
@@ -928,16 +929,11 @@ const EnvDiagram = (() => {
     }
 
     bindings[id] = [];
-    nodes.push(node);
+    pushNode(node);
 
     // Add env edge to parent
     if (parentId && nodeById(parentId)) {
-      edges.push({
-        id: edgeId(id, parentId, "env"),
-        source: id,
-        target: parentId,
-        edgeType: "env",
-      });
+      pushEdge(id, parentId, "env");
     }
 
     scheduleRender();
@@ -969,16 +965,11 @@ const EnvDiagram = (() => {
       node.y = height * 0.3;
     }
 
-    nodes.push(node);
+    pushNode(node);
 
     // Add proc→env edge (right dot → enclosing frame)
     if (frameId && nodeById(frameId)) {
-      edges.push({
-        id: edgeId(id, frameId, "proc-env"),
-        source: id,
-        target: frameId,
-        edgeType: "proc-env",
-      });
+      pushEdge(id, frameId, "proc-env");
     }
 
     scheduleRender();
@@ -1019,29 +1010,13 @@ const EnvDiagram = (() => {
 
     // Add binding→proc edge if this is a procedure binding
     if (valueType === "procedure" && procId) {
-      const eid = edgeId(frameId, procId, "binding");
-      if (!edges.find(e => e.id === eid)) {
-        edges.push({
-          id: eid,
-          source: frameId,
-          target: procId,
-          edgeType: "binding",
-        });
-      }
+      pushEdge(frameId, procId, "binding");
     }
 
     // Add binding→pair edge if this is a pair binding
     // procId field is reused to carry the root pair-node id
     if (valueType === "pair" && procId) {
-      const eid = edgeId(frameId, procId, "binding");
-      if (!edges.find(e => e.id === eid)) {
-        edges.push({
-          id: eid,
-          source: frameId,
-          target: procId,
-          edgeType: "binding",
-        });
-      }
+      pushEdge(frameId, procId, "binding");
     }
 
     scheduleRender();
@@ -1055,10 +1030,7 @@ const EnvDiagram = (() => {
       // Remove old binding→proc/pair edge if target is changing
       if (binding.procId) {
         const oldEid = edgeId(frameId, binding.procId, "binding");
-        edges = edges.filter(e => {
-          const eid = typeof e.id === "string" ? e.id : "";
-          return eid !== oldEid;
-        });
+        edges = edges.filter(e => e.id !== oldEid);
       }
 
       binding.value = newValue;
@@ -1067,15 +1039,7 @@ const EnvDiagram = (() => {
       // For procedure bindings, newValue IS the proc-id
       if (valueType === "procedure" && newValue) {
         binding.procId = newValue;
-        const eid = edgeId(frameId, newValue, "binding");
-        if (!edges.find(e => e.id === eid)) {
-          edges.push({
-            id: eid,
-            source: frameId,
-            target: newValue,
-            edgeType: "binding",
-          });
-        }
+        pushEdge(frameId, newValue, "binding");
       } else if (valueType !== "pair") {
         // Atom binding — clear procId
         binding.procId = null;
@@ -1112,23 +1076,14 @@ const EnvDiagram = (() => {
       node.y = height / 2;
     }
 
-    nodes.push(node);
-    // Don't render yet — wait for pair edges to be added
+    pushNode(node);
     return id;
   }
 
   /** addPairEdge: connect a cons cell to its car or cdr child */
   function addPairEdge(fromId, toId, type) {
     // type is "car" or "cdr"
-    const eid = edgeId(fromId, toId, type);
-    if (edges.find(e => e.id === eid)) return;
-
-    edges.push({
-      id: eid,
-      source: fromId,
-      target: toId,
-      edgeType: type,  // "car" or "cdr"
-    });
+    pushEdge(fromId, toId, type);
 
     // Position child near parent for good list/tree initial layout
     const parent = nodeById(fromId);
@@ -1166,7 +1121,7 @@ const EnvDiagram = (() => {
     node.x = width / 2 + (Math.random() - 0.5) * 100;
     node.y = height / 2 + (Math.random() - 0.5) * 100;
 
-    nodes.push(node);
+    pushNode(node);
     return id;
   }
 
@@ -1184,20 +1139,17 @@ const EnvDiagram = (() => {
     node.x = width / 2 + (Math.random() - 0.5) * 100;
     node.y = height / 2 + (Math.random() - 0.5) * 100;
 
-    nodes.push(node);
+    pushNode(node);
     return id;
   }
 
   function removeNode(id) {
     // Remove from nodes
     nodes = nodes.filter(n => n.id !== id);
+    nodeMap.delete(id);
 
-    // Remove associated edges
-    edges = edges.filter(e => {
-      const sid = typeof e.source === "object" ? e.source.id : e.source;
-      const tid = typeof e.target === "object" ? e.target.id : e.target;
-      return sid !== id && tid !== id;
-    });
+    // Remove associated edges (source/target are always node objects now)
+    edges = edges.filter(e => e.source.id !== id && e.target.id !== id);
 
     // Remove bindings
     delete bindings[id];
@@ -1206,11 +1158,7 @@ const EnvDiagram = (() => {
   }
 
   function removeEdge(fromId, toId) {
-    edges = edges.filter(e => {
-      const sid = typeof e.source === "object" ? e.source.id : e.source;
-      const tid = typeof e.target === "object" ? e.target.id : e.target;
-      return !(sid === fromId && tid === toId);
-    });
+    edges = edges.filter(e => !(e.source.id === fromId && e.target.id === toId));
     scheduleRender();
   }
 
@@ -1267,6 +1215,7 @@ const EnvDiagram = (() => {
     nodes = [];
     edges = [];
     bindings = {};
+    nodeMap.clear();
     colorIndex = 0;
     if (autoFitTimer !== null) { clearTimeout(autoFitTimer); autoFitTimer = null; }
     if (renderTimer !== null) { clearTimeout(renderTimer); renderTimer = null; }
