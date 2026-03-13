@@ -15,30 +15,31 @@
       <div class="toolbar-left">
         <span class="brand">EnvDraw</span>
         <div class="toolbar-sep"></div>
-        <button id="btn-step" class="tb-btn" title="Step one evaluation (F10)">
-          <span class="tb-icon">▶︎</span> Step
-        </button>
-        <button id="btn-continue" class="tb-btn" title="Continue without stopping (F5)">
-          <span class="tb-icon">⏩</span> Continue
-        </button>
+        <button id="btn-gc" class="tb-btn tb-btn-subtle" title="Garbage collect">GC</button>
+        <button id="btn-clear" class="tb-btn tb-btn-subtle" title="Clear diagram and trace">Clear</button>
         <div class="toolbar-sep"></div>
         <label class="tb-toggle" title="Toggle stepping mode">
           <input type="checkbox" id="chk-stepping">
           <span class="toggle-track"><span class="toggle-thumb"></span></span>
           <span class="toggle-label">Stepping</span>
         </label>
+        <button id="btn-step" class="tb-btn tb-step-btn hidden" title="Step one evaluation (F10)">
+          <span class="tb-icon">▶︎</span> Step
+        </button>
+        <button id="btn-continue" class="tb-btn tb-step-btn hidden" title="Continue without stopping (F5)">
+          <span class="tb-icon">⏩</span> Continue
+        </button>
         <div class="toolbar-sep"></div>
-        <button id="btn-gc" class="tb-btn tb-btn-subtle" title="Garbage collect">GC</button>
-        <button id="btn-clear" class="tb-btn tb-btn-subtle" title="Clear diagram and trace">Clear</button>
-        <div class="toolbar-sep"></div>
-        <select id="sel-examples" class="tb-select" title="Load an example program" autocomplete="off">
-          <option value="">Examples…</option>
-        </select>
         <select id="sel-layout" class="tb-select" title="Diagram layout mode" autocomplete="off">
           <option value="force">Force</option>
           <option value="grid">Grid</option>
         </select>
-        <button id="btn-randomize" class="tb-btn tb-btn-subtle" title="Randomize forces">Randomize</button>
+        <button id="btn-randomize" class="tb-btn tb-btn-subtle hidden" title="Randomize forces">Randomize</button>
+        <div class="toolbar-sep"></div>
+        <div id="examples-menu" class="examples-menu">
+          <button id="btn-examples" class="tb-btn tb-btn-subtle" title="Load an example program">Examples ▾</button>
+          <div id="examples-flyout" class="examples-flyout hidden"></div>
+        </div>
       </div>
       <div class="toolbar-right">
         <span id="status-indicator" class="status-ready">Ready</span>
@@ -115,7 +116,7 @@
     </div>
 
     <!-- REPL -->
-    <div id="repl-area" class="collapsed">>
+    <div id="repl-area" class="collapsed">
       <div id="repl-handle" title="Toggle REPL (R)">
         <span class="repl-handle-icon">▼</span>
         <span class="repl-handle-label">REPL</span>

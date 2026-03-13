@@ -27,12 +27,12 @@ async function submitCode(page, code) {
   await expect(status).toHaveText("Ready", { timeout: 30000 });
 }
 
-// Helper: select an example from the dropdown
+// Helper: select an example from the flyout menu
 async function selectExample(page, name) {
   await page.evaluate((n) => {
-    const sel = document.getElementById("sel-examples");
-    sel.value = n;
-    sel.dispatchEvent(new Event("change"));
+    const flyout = document.getElementById("examples-flyout");
+    const btn = Array.from(flyout.querySelectorAll(".ex-btn")).find(b => b.textContent === n);
+    if (btn) btn.click();
   }, name);
   const status = page.locator("#status-indicator");
   await expect(status).toHaveText("Ready", { timeout: 30000 });
@@ -69,11 +69,11 @@ test.describe("Boot", () => {
     expect(realErrors(errors)).toEqual([]);
   });
 
-  test("examples dropdown is populated", async ({ page }) => {
+  test("examples flyout is populated", async ({ page }) => {
     await waitForReady(page);
-    const options = page.locator("#sel-examples option");
-    // Placeholder + 2 examples (factorial, skiplist)
-    await expect(options).toHaveCount(3);
+    const buttons = page.locator("#examples-flyout .ex-btn");
+    // 2 examples (factorial, skiplist)
+    await expect(buttons).toHaveCount(2);
   });
 });
 

@@ -485,6 +485,11 @@ function wireEvents() {
 
   /** Update Step/Continue button highlight state. */
   function updateStepButtons() {
+    // Show Step/Continue only when stepping is active
+    const show = stepping.active;
+    btnStep.classList.toggle("hidden", !show);
+    btnContinue.classList.toggle("hidden", !show);
+
     if (stepping.suspended && stepping.queue.length > 0) {
       btnStep.classList.add("step-highlight");
       btnContinue.classList.add("step-highlight");
@@ -743,36 +748,51 @@ function wireEvents() {
   });
 
   // ── Examples dropdown ──
-  const selExamples = document.getElementById("sel-examples");
+  // ── Examples flyout menu ──
+  const btnExamples = document.getElementById("btn-examples");
+  const examplesFlyout = document.getElementById("examples-flyout");
   if (window.ENVDRAW_EXAMPLES) {
     window.ENVDRAW_EXAMPLES.forEach((ex) => {
-      const opt = document.createElement("option");
-      opt.value = ex.name;
-      opt.textContent = ex.name;
-      selExamples.appendChild(opt);
+      const btn = document.createElement("button");
+      btn.className = "ex-btn";
+      btn.textContent = ex.name;
+      btn.addEventListener("click", () => {
+        examplesFlyout.classList.add("hidden");
+        replInput.value = ex.code;
+        submitInput();
+        replInput.focus();
+      });
+      examplesFlyout.appendChild(btn);
     });
   }
-  selExamples.addEventListener("change", () => {
-    const name = selExamples.value;
-    if (!name) return;
-    const ex = window.ENVDRAW_EXAMPLES.find((e) => e.name === name);
-    if (!ex) return;
-    selExamples.value = "";
-    replInput.value = ex.code;
-    submitInput();
-    replInput.focus();
+  btnExamples.addEventListener("click", () => {
+    examplesFlyout.classList.toggle("hidden");
+  });
+  // Close flyout when clicking outside
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("#examples-menu")) {
+      examplesFlyout.classList.add("hidden");
+    }
   });
 
   // ── Layout mode selector ──
   const selLayout = document.getElementById("sel-layout");
+  const btnRandomizeTop = document.getElementById("btn-randomize");
+
+  function updateLayoutUI() {
+    const isForce = selLayout.value === "force";
+    btnRandomizeTop.classList.toggle("hidden", !isForce);
+  }
+
   selLayout.addEventListener("change", () => {
     EnvDiagram.setLayout(selLayout.value);
+    updateLayoutUI();
   });
   // Reset dropdown to match actual layout state (browser may restore stale value)
   selLayout.value = EnvDiagram.getLayout();
+  updateLayoutUI();
 
   // ── Toolbar randomize button ──
-  const btnRandomizeTop = document.getElementById("btn-randomize");
   function randomizeForces() {
     const panel = document.getElementById("force-panel");
     panel.querySelectorAll("input[data-key]").forEach(input => {

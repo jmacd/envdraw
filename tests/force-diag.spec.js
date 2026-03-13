@@ -27,8 +27,9 @@ test('force layout analysis', async ({ page }) => {
   const status = page.locator("#status-indicator");
   await expect(status).toHaveText("Ready", { timeout: 15000 });
   await page.evaluate((n) => {
-    const sel = document.getElementById("sel-examples");
-    sel.value = n; sel.dispatchEvent(new Event("change"));
+    const flyout = document.getElementById("examples-flyout");
+    const btn = Array.from(flyout.querySelectorAll(".ex-btn")).find(b => b.textContent === n);
+    if (btn) btn.click();
   }, "skiplist");
   await expect(status).toHaveText("Ready", { timeout: 30000 });
   await page.waitForTimeout(3000);

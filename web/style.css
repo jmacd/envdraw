@@ -187,6 +187,53 @@ header#toolbar {
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
+/* Examples flyout menu */
+.examples-menu {
+  position: relative;
+  display: inline-block;
+}
+
+.examples-flyout {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+  z-index: 100;
+  min-width: 160px;
+  padding: 4px 0;
+}
+
+.examples-flyout .ex-btn {
+  display: block;
+  width: 100%;
+  padding: 6px 14px;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.examples-flyout .ex-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+
+/* Conditional toolbar item visibility */
+.tb-step-btn.hidden,
+#btn-randomize.hidden,
+.examples-flyout.hidden {
+  display: none;
+}
+
 /* Toggle switch */
 .tb-toggle {
   display: inline-flex;
@@ -635,13 +682,23 @@ header#toolbar {
 }
 
 #repl-area.collapsed {
-  height: 28px;
-  min-height: 28px;
+  height: 42px;
+  min-height: 42px;
   border-top: 1px solid #555;
 }
 #repl-area.collapsed #repl-handle {
-  color: var(--repl-fg);
-  background: rgba(255,255,255,0.06);
+  display: none;
+}
+#repl-area.collapsed #repl-body {
+  display: flex;
+}
+#repl-area.collapsed #repl-log {
+  display: none;
+}
+#repl-area.collapsed #repl-input {
+  min-height: 28px;
+  max-height: 28px;
+  overflow: hidden;
 }
 
 #repl-handle {
@@ -675,11 +732,13 @@ header#toolbar {
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
 }
-#repl-area.collapsed #repl-body {
-  display: none;
-}
+
+#repl-body::-webkit-scrollbar       { width: 6px; }
+#repl-body::-webkit-scrollbar-track  { background: transparent; }
+#repl-body::-webkit-scrollbar-thumb  { background: #444; border-radius: 3px; }
+/* repl-body visibility is controlled by the collapsed rules above */
 
 #repl-log {
   overflow-y: auto;
