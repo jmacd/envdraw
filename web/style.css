@@ -462,8 +462,11 @@ header#toolbar {
 }
 
 .empty-icon {
+  font-size: 72px;
+  font-weight: 300;
   color: var(--border);
   margin-bottom: 12px;
+  font-family: "Helvetica Neue", "Arial", sans-serif;
 }
 
 .empty-title {
