@@ -56,17 +56,36 @@
 ;;; cleanup during rebuild.
 (define *current-tree-node-ids* '())
 
+;;; Root pair-node id for the tree currently being built.
+;;; Set by the first pair created in build-pair-node; passed to every
+;;; d3-add-pair call so D3 can group nodes by tree.
+(define *current-tree-root-id* #f)
+
 ;;; Current color (cycles through palette)
 (define *color-index* 0)
 (define *color-palette*
-  (list color-palegreen color-lemonchiffon color-lightblue
-        color-lightyellow color-pink color-lavender))
+  (list color-ice-blue color-seafoam color-cool-sage
+        color-pale-steel color-soft-teal color-mist))
 
 (define (next-color!)
   (let ((c (list-ref *color-palette*
                      (modulo *color-index* (length *color-palette*)))))
     (set! *color-index* (+ 1 *color-index*))
     c))
+
+;;; Reset all web-observer mutable state (called on Clear).
+(define (reset-web-observer-state!)
+  (set! *next-id* 0)
+  (set! *frame-ids* '())
+  (set! *proc-ids* '())
+  (set! *pair-ids* '())
+  (set! *pair-atom-ids* '())
+  (set! *pair-null-ids* '())
+  (set! *proc-frame-map* '())
+  (set! *pair-seen* '())
+  (set! *current-tree-node-ids* '())
+  (set! *color-index* 0)
+  (set! *pair-tree-registry* '()))
 
 ;;; Variables required by envdraw.scm boot! (kept for compatibility)
 ;;; These are effectively unused with D3 rendering.
@@ -122,6 +141,7 @@
    Returns the root pair-node id string."
   (set! *pair-seen* '())
   (set! *current-tree-node-ids* '())
+  (set! *current-tree-root-id* #f)
   (build-pair-node obj))
 
 (define (build-pair-node obj)
@@ -139,6 +159,9 @@
       (pair-seen-add! obj pair-id)
       (set! *pair-ids* (cons pair-id *pair-ids*))
       (set! *current-tree-node-ids* (cons pair-id *current-tree-node-ids*))
+       ;; First pair created becomes the tree root
+       (when (not *current-tree-root-id*)
+         (set! *current-tree-root-id* pair-id))
       ;; Compute short labels for inline display of atomic car/cdr.
       ;; Null is represented as "/" which the D3 side renders as a
       ;; diagonal slash inside the cell half (classic SICP style).
@@ -152,8 +175,8 @@
                               ((viewable-pair? cdr-val) "")
                               ((compound-procedure? cdr-val) "")
                               (else (viewed-rep cdr-val)))))
-        ;; Create the cons-cell node in D3
-        (d3-add-pair pair-id car-label cdr-label)
+        ;; Create the cons-cell node in D3 with tree-root id
+        (d3-add-pair pair-id car-label cdr-label *current-tree-root-id*)
         ;; Process car child — create edges for non-inline children
         (cond
          ((null? car-val)
@@ -235,6 +258,23 @@
 (define (pair-tree-entry-frame-id   e) (caddr e))
 (define (pair-tree-entry-var-name   e) (cadddr e))
 (define (pair-tree-entry-node-ids   e) (car (cddddr e)))
+
+(define (cleanup-pair-trees-for-frame! frame-id)
+  "Remove all pair-tree entries and their D3 nodes for FRAME-ID."
+  (let loop ((reg *pair-tree-registry*) (keep '()))
+    (cond
+     ((null? reg)
+      (set! *pair-tree-registry* (reverse keep)))
+     ((equal? (pair-tree-entry-frame-id (car reg)) frame-id)
+      (let ((node-ids (pair-tree-entry-node-ids (car reg))))
+        (for-each (lambda (nid) (d3-remove-node nid)) node-ids)
+        (set! *pair-ids*
+              (filter (lambda (id) (not (member id node-ids))) *pair-ids*))
+        (set! *pair-atom-ids*
+              (filter (lambda (id) (not (member id node-ids))) *pair-atom-ids*)))
+      (loop (cdr reg) keep))
+     (else
+      (loop (cdr reg) (cons (car reg) keep))))))
 
 (define (find-pair-trees-containing cell)
   "Find all registered pair trees that contain CELL (by eq?)."
@@ -453,7 +493,24 @@
    (lambda (obj-id) (values))
 
    ;; on-request-render: () → void
-   (lambda () (request-render!))))
+   (lambda () (request-render!))
+
+   ;; on-tail-gc: (frame-id) → void
+   ;; Remove a frame that became unreachable due to a tail call.
+   (lambda (frame-id)
+     ;; Remove pair trees owned by this frame (before removing the frame node)
+     (cleanup-pair-trees-for-frame! frame-id)
+     ;; Remove the frame node from D3 (also removes edges)
+     (d3-remove-node frame-id)
+     ;; Remove from tracking list
+     (set! *frame-ids*
+           (let loop ((ids *frame-ids*) (keep '()))
+             (cond ((null? ids) keep)
+                   ((equal? (car ids) frame-id)
+                    (loop (cdr ids) keep))
+                   (else (loop (cdr ids)
+                               (cons (car ids) keep))))))
+     (request-render!))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;             DRAG-AND-DROP (handled by D3 — stubs)
@@ -480,6 +537,7 @@
             (if (member fid reachable-frames)
                 (loop (cdr ids) (cons fid keep))
                 (begin
+                  (cleanup-pair-trees-for-frame! fid)
                   (d3-remove-node fid)
                   (set! removed (+ removed 1))
                   (loop (cdr ids) keep))))))

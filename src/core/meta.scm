@@ -121,9 +121,7 @@
                                                 " . "
                                                 (format-sexp-safe (cdr p))))))
                         ")"))
-        (else (let ((p (open-output-string)))
-                (write x p)
-                (get-output-string p)))))
+        (else "#<unspecified>")))
 
 ;;; String join (not always in R7RS-small)
 (define (string-join lst sep)
@@ -158,13 +156,20 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define (user-display object)
-  (when *meta-observer*
-    ((observer-on-write-trace *meta-observer*) (viewed-rep object))))
+  (let ((s (viewed-rep object)))
+    (when *meta-observer*
+      ((observer-on-write-trace *meta-observer*) s))
+    ;; Return a string representation so the evaluator has a defined
+    ;; value.  Hoot FFI functions with "-> none" return type produce
+    ;; a void that confuses viewed-rep / format-sexp.
+    s))
 
 (define (user-print object)
-  (when *meta-observer*
-    ((observer-on-write-trace *meta-observer*) (viewed-rep object))
-    ((observer-on-write-trace *meta-observer*) "\n")))
+  (let ((s (viewed-rep object)))
+    (when *meta-observer*
+      ((observer-on-write-trace *meta-observer*) s)
+      ((observer-on-write-trace *meta-observer*) "\n"))
+    s))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;                    GLOBAL STATE
@@ -195,8 +200,25 @@
 (define view:continue #f)
 (define view:use-stepping? #f)
 
+;;; Tail-call optimization state
+;;; *tail-call-env* holds the environment whose frame should be removed
+;;; when a tail call creates a new frame.  Set in tail positions
+;;; (eval-sequence last-exp, eval-if branches, etc.).
+(define *tail-call-env* #f)
+
+;;; *frame-closures-count* tracks how many closures (lambdas) have been
+;;; created inside the current application frame.  If any closures were
+;;; created, the frame is conservatively kept alive since a closure
+;;; might have captured it.
+(define *frame-closures-count* 0)
+
 ;;; The current observer (set at startup)
 (define *meta-observer* #f)
+
+;;; Whether the global frame has been emitted to the observer (D3).
+;;; We suppress it during boot so the landing page shows the empty state;
+;;; the frame is lazily emitted on the first evaluation.
+(define *global-frame-emitted* #f)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;               SOURCE-LINE SCANNING HELPERS
@@ -279,7 +301,7 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define special-forms-list
-  '(quote define set! lambda cond if let let* and or begin eval apply))
+  '(quote define set! lambda cond if when let let* and or begin eval apply))
 
 (define (define-special-forms! env)
   (for-each
@@ -353,6 +375,22 @@
   (set! *eval-indent-level* (max 0 (- *eval-indent-level* 2)))
   (when *meta-observer*
     ((observer-on-reduce *meta-observer*) *eval-indent-level*)))
+
+;;; reduce-with-env: like reduce, but also records the environment
+;;; whose frame becomes dead when the tail call completes.
+;;; Only the innermost (most recent) tail-call env is tracked;
+;;; nested reductions within the same tail chain are fine — each
+;;; subsequent reduce-with-env overwrites the previous, which is
+;;; correct because the earlier frame is already in the caller's
+;;; tail chain and will also become unreachable.
+(define (reduce-with-env env)
+  (reduce)
+  ;; Only mark for tail-GC if this is NOT the global environment
+  ;; and no closures were created in this frame.
+  (when (and (not (null? env))
+             (not (eq? env the-global-environment))
+             (= *frame-closures-count* 0))
+    (set! *tail-call-env* env)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;                    WAIT FOR STEP
@@ -434,7 +472,11 @@
                                  "L" (number->string src-line))
                                 (string-append
                                  "E" (number->string
-                                      *next-environment-number*)))))
+                                      *next-environment-number*))))
+                ;; Capture tail-call env BEFORE creating the new frame
+                (saved-tail-env *tail-call-env*))
+           ;; Clear tail-call state for the new frame
+           (set! *tail-call-env* #f)
            (wait-for-confirmation
             (string-append
              "APPLY " (viewed-rep procedure)
@@ -443,12 +485,22 @@
                                  (viewed-rep (safen-list x))) arguments))
              ", making new " frame-name
              "."))
-           (eval-sequence (env-procedure-body procedure)
-                          (extend-environment
+           (let ((new-env (extend-environment
                            (parameters procedure)
                            arguments
                            apply-env
-                           ':name frame-name))))
+                           ':name frame-name)))
+             ;; TCO: remove the dead tail-call frame from the diagram.
+             ;; The old frame is unreachable because the tail call
+             ;; replaced it — no code will return to it.
+             (when (and saved-tail-env *meta-observer*)
+               (let ((old-fid (frame-info-id
+                               (frame-info-of saved-tail-env))))
+                 ((observer-on-tail-gc *meta-observer*) old-fid)))
+             ;; Reset closure counter for the new frame's body
+             (set! *frame-closures-count* 0)
+             (eval-sequence (env-procedure-body procedure)
+                            new-env))))
         (else (error "Unknown procedure type -- apply" procedure))))
 
 (define (lazy-deextern x)
@@ -488,6 +540,7 @@
       ((lambda) (after-eval (make-procedure exp env)))
       ((cond)   (eval-cond (clauses exp) env))
       ((if)     (eval-if exp env))
+      ((when)   (eval-when exp env))
       ((let)    (eval-let exp env))
       ((let*)   (eval-let* exp env))
       ((and)    (eval-and (predicates exp) env))
@@ -553,7 +606,11 @@
 
 ;;; lambda — make-procedure
 ;;; Creates a compound procedure representation and notifies observer.
+;;; Increments *frame-closures-count* so that tail-call optimization
+;;; knows a closure was created in the current frame (and therefore
+;;; the frame might still be referenced by the closure).
 (define (make-procedure lambda-exp env)
+  (set! *frame-closures-count* (+ *frame-closures-count* 1))
   (let* ((fi (frame-info-of env))
          ;; Reconstruct clean lambda sexp: the car of lambda-exp is the
          ;; special-form object (special-form lambda), not the symbol lambda.
@@ -604,12 +661,21 @@
       (if (view-eval (cadr exp) env)
           (if (null? (cddr exp))
               (error "Not enough IF clauses")
-              (begin (reduce)
+              (begin (reduce-with-env env)
                      (view-eval (caddr exp) env)))
           (if (not (null? (cdddr exp)))
-              (begin (reduce)
+              (begin (reduce-with-env env)
                      (view-eval (cadddr exp) env))
               (after-eval (if #f #f))))))
+
+;;; when — (when test body ...) → evaluate body as sequence if test is true
+(define (eval-when exp env)
+  (if (null? (cdr exp))
+      (error "Empty WHEN statement")
+      (if (view-eval (cadr exp) env)
+          (begin (reduce-with-env env)
+                 (eval-sequence (cddr exp) env))
+          (after-eval (if #f #f)))))
 
 ;;; let
 ;;; (Max Hailperin: evaluating let as application is a reduction)
@@ -621,7 +687,7 @@
         (else #t))
   (let ((bindings (cadr exp))
         (body (cddr exp)))
-    (reduce)
+    (reduce-with-env env)
     (view-eval (cons (cons 'lambda (cons (map car bindings) body))
                      (map cadr bindings))
                env)))
@@ -636,7 +702,7 @@
         (else #t))
   (let ((bindings (cadr exp))
         (body (cddr exp)))
-    (reduce)
+    (reduce-with-env env)
     (if (null? (cdr bindings))
         (view-eval (cons (cons 'lambda (cons (map car bindings) body))
                          (map cadr bindings))
@@ -655,7 +721,7 @@
 (define (eval-and preds env)
   (cond ((null? preds) (after-eval #t))
         ((null? (cdr preds))
-         (reduce)
+         (reduce-with-env env)
          (view-eval (car preds) env))
         ((not (view-eval (car preds) env)) (after-eval #f))
         (else (eval-and (cdr preds) env))))
@@ -668,7 +734,7 @@
 (define (eval-or preds env)
   (cond ((null? preds) (after-eval #f))
         ((null? (cdr preds))
-         (reduce)
+         (reduce-with-env env)
          (view-eval (car preds) env))
         ((let ((val (view-eval (car preds) env)))
            (if val (after-eval val) #f)))
@@ -677,7 +743,7 @@
 ;;; sequence (begin)
 ;;; (Max Hailperin: last-exp case uses (reduce) for tail-recursion)
 (define (eval-sequence exps env)
-  (cond ((last-exp? exps) (reduce) (view-eval (first-exp exps) env))
+  (cond ((last-exp? exps) (reduce-with-env env) (view-eval (first-exp exps) env))
         (else (view-eval (first-exp exps) env)
               (eval-sequence (rest-exps exps) env))))
 
@@ -747,25 +813,57 @@
 
 (define (envdraw-init obs)
   (set! *meta-observer* obs)
-  (set! *current-observer* obs)
+  ;; Clear *current-observer* so setup-environment won't emit the
+  ;; global frame to D3 — we want the landing page empty state.
+  (set! *current-observer* #f)
   (set! the-eval-stack (make-stack))
   (set! last-error-stack #f)
   (set! *eval-indent-level* 0)
   (set! *current-repl-line* 0)
   (set! *lambda-line-queue* '())
   (set! *next-environment-number* 1)
+  (set! *tail-call-env* #f)
+  (set! *frame-closures-count* 0)
   (set! view:confirmation #f)
   (set! view:continue #f)
   (set! view:use-stepping? #f)
   (set! the-global-environment (setup-environment obs))
+  ;; Now enable the observer for subsequent evaluations
+  (set! *current-observer* obs)
+  (set! *global-frame-emitted* #f)
   ;; Return the REPL evaluator procedure
   envdraw-eval-one)
+
+;;; Reset the evaluator to a clean state (called on Clear).
+;;; Re-initializes the global environment and all counters so the
+;;; next evaluation starts fresh, with the global frame lazily
+;;; emitted again.
+(define (envdraw-clear!)
+  (reset-web-observer-state!)
+  (envdraw-init *meta-observer*))
+
+;;; Lazily emit the global environment frame to D3.
+;;; Called before the first evaluation so the frame appears
+;;; only when the user actually enters an expression.
+(define (emit-global-frame!)
+  (unless *global-frame-emitted*
+    (set! *global-frame-emitted* #t)
+    (when *current-observer*
+      (let ((fi (frame-info-of the-global-environment)))
+        (let ((obs-id ((observer-on-frame-created *current-observer*)
+                       (frame-info-name fi)
+                       (frame-info-parent-id fi)
+                       (frame-info-width fi)
+                       (frame-info-height fi))))
+          (when (string? obs-id)
+            (set-frame-info-id! fi obs-id)))))))
 
 ;;; Evaluate one or more expressions (called from the REPL).
 ;;; When multiple expressions are present in the input string,
 ;;; all are read and evaluated in order; the result of the last
 ;;; expression is returned.
 (define (envdraw-eval-one input-string)
+  (emit-global-frame!)
   (stack-empty! the-eval-stack)
   (set! *eval-indent-level* 0)
   (let* ((num-input-lines (+ 1 (count-newlines input-string)))

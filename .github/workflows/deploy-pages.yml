@@ -1,7 +1,7 @@
 # Deploy EnvDraw to GitHub Pages
 #
 # - On push to main: deploys web/ to GitHub Pages.
-# - On pull request to main: validates required files exist.
+# - On pull request to main: validates required files exist and runs Playwright tests.
 # - Manual trigger via workflow_dispatch.
 
 name: Deploy to GitHub Pages
@@ -32,8 +32,8 @@ jobs:
       - name: Verify required files exist
         run: |
           echo "Checking required site files..."
-          for f in index.html boot.js reflect.js d3-diagram.js style.css \
-                   reflect.wasm wtf8.wasm envdraw.wasm; do
+          for f in index.html boot.js d3-diagram.js d3.v7.min.js style.css envdraw.wasm \
+                   examples.js hoot/reflect.js hoot/reflect.wasm hoot/wtf8.wasm; do
             if [ ! -f "web/$f" ]; then
               echo "ERROR: missing web/$f"
               exit 1
@@ -41,8 +41,36 @@ jobs:
           done
           echo "All required files present."
 
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright tests
+        run: npx playwright test
+
+      - name: Upload test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: test-results/
+          retention-days: 7
+
   deploy:
-    needs: validate
+    needs: [validate, test]
     if: github.event_name != 'pull_request'
     environment:
       name: github-pages

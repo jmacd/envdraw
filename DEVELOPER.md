@@ -55,7 +55,7 @@ web/envdraw.scm
 **Include order matters.** `meta.scm` references `*host-eval*` (the primitives
 table), which is defined in `envdraw.scm` between the includes and the final
 `(include "../src/core/meta.scm")`.  The primitives table itself references
-`user-print` and `user-display` from `web-observer.scm`, so the observer must
+`user-print` and `user-display` from `meta.scm`, so the observer must
 be included first.
 
 ### Data flow at runtime
@@ -126,6 +126,7 @@ D3-drag for the interactive SVG diagram.
 | Guile | 3.0.x | `brew install guile` |
 | Guile Hoot | 0.6.1 | `brew install guile-hoot` |
 | Python 3 | any | pre-installed on macOS |
+| Node.js | 18+ | `brew install node` (for Playwright tests) |
 
 You only need Guile + Hoot if you modify any `.scm` file.  If you only change
 JS/CSS/HTML, skip straight to `./build.sh serve`.
@@ -143,7 +144,7 @@ guile -c '(use-modules (hoot config)) (display %version) (newline)'
 ### Build the Wasm module
 
 ```sh
-./build.sh               # compiles web/envdraw.wasm (~30s on M1)
+./build.sh               # compiles web/envdraw.wasm (~30s on M1) + generates web/examples.js
 ```
 
 This runs:
@@ -154,6 +155,18 @@ guild compile-wasm -L web -L . -o web/envdraw.wasm web/envdraw.scm
 
 The `-L web -L .` flags set Guile's load path so `(include "../src/...")` paths
 resolve correctly from `web/envdraw.scm`.
+
+It also generates `web/examples.js` from `examples/*.scm` (see below).
+
+### Rebuild examples only
+
+```sh
+./build.sh examples       # regenerates web/examples.js from examples/*.scm
+```
+
+This reads each `.scm` file in `examples/`, JSON-encodes its contents, and
+writes `web/examples.js` — a static array consumed by the toolbar dropdown.
+No Wasm recompilation needed.  Use this after adding or editing example files.
 
 ### Run the dev server
 
@@ -178,11 +191,54 @@ clients pick up the new version without hard-refresh.
 ### Clean
 
 ```sh
-./build.sh clean          # removes web/envdraw.wasm only
+./build.sh clean          # removes web/envdraw.wasm and web/examples.js
 ```
 
 This does **not** remove `reflect.wasm` or `wtf8.wasm` (they are Hoot runtime
 files, not build outputs).
+
+## Testing
+
+### Running the tests
+
+```sh
+npm install               # first time only — installs Playwright
+npx playwright install    # first time only — installs browser binaries
+npm test                  # runs Playwright tests against web/
+```
+
+Tests use [Playwright](https://playwright.dev/) with Chromium. The test config
+(`playwright.config.js`) starts a Python dev server on port 8089 serving `web/`.
+
+### Test structure
+
+Tests live in `tests/envdraw.spec.js`:
+
+- **Boot** — Wasm loads, status shows "Ready", examples dropdown is populated
+- **Factorial** — defines `fact`, calls `(fact 5)`, checks output `120`,
+  verifies diagram renders nodes, no console errors
+- **Skiplist** — loads the skiplist example, verifies it completes without errors
+  and within a time budget
+
+`tests/debug.spec.js` is a diagnostic harness for isolating bugs (not part of
+the regular test suite).
+
+### Writing tests
+
+Because the Scheme evaluator runs **synchronously** and blocks the main thread,
+Playwright's `fill()` / `press()` / `selectOption()` will hang. Use
+`page.evaluate()` instead:
+
+```javascript
+await page.evaluate((code) => {
+  const input = document.getElementById("repl-input");
+  input.value = code;
+  input.dispatchEvent(new Event("input"));
+  input.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Enter", bubbles: true })
+  );
+}, schemeCode);
+```
 
 ## Deployment (GitHub Pages)
 

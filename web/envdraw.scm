@@ -154,6 +154,9 @@
 (define-foreign register-gc-handler "app" "registerGCHandler"
   (ref null extern) -> none)
 
+(define-foreign register-clear-handler "app" "registerClearHandler"
+  (ref null extern) -> none)
+
 ;;; Output functions — Scheme calls JS to update DOM
 (define-foreign trace-append "app" "traceAppend"
   (ref string) -> none)
@@ -193,7 +196,7 @@
   (ref string) (ref string) (ref string) (ref string) -> none)
 
 (define-foreign d3-add-pair "app" "d3AddPair"
-  (ref string) (ref string) (ref string) -> none)
+  (ref string) (ref string) (ref string) (ref string) -> none)
 
 (define-foreign d3-add-pair-edge "app" "d3AddPairEdge"
   (ref string) (ref string) (ref string) -> none)
@@ -218,7 +221,7 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;
 ;;; NB: Includes MUST come before the primitives table because
-;;; user-print / user-display (defined in web-observer.scm) are
+;;; user-print / user-display (defined in meta.scm) are
 ;;; referenced via unquote in the quasiquoted alist.  Evaluating
 ;;; those unquotes before the definitions exist produces an
 ;;; uninitialised Wasm table index → "index out of bounds".
@@ -250,7 +253,9 @@
 ;;; The meta-evaluator calls (*host-eval* var) to resolve primitive
 ;;; procedures like +, cons, car, etc.
 ;;;
-;;; Must come AFTER web-observer (defines user-print, user-display)
+;;; Must come AFTER web-observer.scm (web-observer is used by user-print,
+;;; user-display which are defined in meta.scm but referenced here via
+;;; unquote — Hoot's single-unit compilation makes them visible).
 ;;; and BEFORE meta.scm (which references *host-eval*).
 ;;;
 ;;; NOTE: Split into small quasiquoted lists and joined with append.
@@ -456,8 +461,10 @@
      (procedure->external
       (lambda () (handle-gc!))))
 
-    ;; Initial render — show the GLOBAL ENVIRONMENT frame
-    (request-render!)
+    ;; Clear: reset evaluator and observer state
+    (register-clear-handler
+     (procedure->external
+      (lambda () (envdraw-clear!))))
 
     (console-log "EnvDraw: ready.")))
 

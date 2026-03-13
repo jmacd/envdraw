@@ -44,6 +44,7 @@ const callbacks = {
   mouseDown: null,
   mouseMove: null,
   mouseUp: null,
+  clear: null,
 };
 
 const view = {
@@ -131,6 +132,7 @@ const appImports = {
   registerMouseMoveHandler(fn)  { callbacks.mouseMove = fn; },
   registerMouseUpHandler(fn)    { callbacks.mouseUp = fn; },
   registerGCHandler(fn)          { callbacks.gc = fn; },
+  registerClearHandler(fn)       { callbacks.clear = fn; },
 
   traceAppend(text) {
     text = schemeToString(text) || '';
@@ -176,7 +178,6 @@ const appImports = {
     const a = schemeToString(frameId), b = schemeToString(varName),
           c = schemeToString(value), d = schemeToString(valueType),
           e = schemeToString(procId);
-    console.log("[d3AddBinding]", {frameId: a, varName: b, value: c, valueType: d, procId: e, rawProcId: procId});
     if (stepping.queueing) { stepping.currentOps.push(() => EnvDiagram.addBinding(a, b, c, d, e)); return; }
     EnvDiagram.addBinding(a, b, c, d, e);
   },
@@ -196,11 +197,11 @@ const appImports = {
     if (stepping.queueing) { stepping.currentOps.push(() => EnvDiagram.removeEdge(a, b)); return; }
     EnvDiagram.removeEdge(a, b);
   },
-  d3AddPair(id, carLabel, cdrLabel) {
+  d3AddPair(id, carLabel, cdrLabel, treeId) {
     const a = schemeToString(id), b = schemeToString(carLabel),
-          c = schemeToString(cdrLabel);
-    if (stepping.queueing) { stepping.currentOps.push(() => EnvDiagram.addPair(a, b, c)); return; }
-    EnvDiagram.addPair(a, b, c);
+          c = schemeToString(cdrLabel), t = schemeToString(treeId);
+    if (stepping.queueing) { stepping.currentOps.push(() => EnvDiagram.addPair(a, b, c, t)); return; }
+    EnvDiagram.addPair(a, b, c, t);
   },
   d3AddPairEdge(fromId, toId, edgeType) {
     const a = schemeToString(fromId), b = schemeToString(toId),
@@ -223,9 +224,6 @@ const appImports = {
   },
   /** Called from Scheme when wait-for-confirmation fires (at each apply). */
   notifyStepBoundary() {
-    console.log("[step] notifyStepBoundary: queueing=", stepping.queueing,
-                "boundariesSeen=", stepping.boundariesSeen,
-                "currentOps.length=", stepping.currentOps.length);
     if (stepping.queueing) {
       stepping.boundariesSeen++;
       finalizeCurrentStep();
@@ -270,10 +268,30 @@ function realTraceAppend(text) {
 
   line.textContent = text;
   traceOutput.appendChild(line);
-  traceOutput.scrollTop = traceOutput.scrollHeight;
+
+  // Cap trace panel DOM nodes to prevent browser slowdown
+  const MAX_TRACE_LINES = 2000;
+  while (traceOutput.children.length > MAX_TRACE_LINES) {
+    traceOutput.removeChild(traceOutput.firstChild);
+  }
+
+  // Defer scroll to avoid forced layout reflow on every append
+  scheduleTraceScroll();
 
   if (text.includes("Error") || text.includes("***")) {
     showTracePanel();
+  }
+}
+
+let traceScrollScheduled = false;
+function scheduleTraceScroll() {
+  if (!traceScrollScheduled) {
+    traceScrollScheduled = true;
+    setTimeout(() => {
+      traceScrollScheduled = false;
+      const el = document.getElementById("trace-output");
+      if (el) el.scrollTop = el.scrollHeight;
+    }, 0);
   }
 }
 
@@ -284,7 +302,7 @@ function realSetResultText(text) {
   line.className = "trace-line return-line";
   line.textContent = "⇒ " + text;
   traceOutput.appendChild(line);
-  traceOutput.scrollTop = traceOutput.scrollHeight;
+  scheduleTraceScroll();
   hideEmptyState();
 }
 
@@ -366,6 +384,8 @@ function setupResizeHandle() {
 
 function wireEvents() {
   const replInput = document.getElementById("repl-input");
+  const replArea = document.getElementById("repl-area");
+  const replHandle = document.getElementById("repl-handle");
   const btnStep = document.getElementById("btn-step");
   const btnContinue = document.getElementById("btn-continue");
   const chkStepping = document.getElementById("chk-stepping");
@@ -465,6 +485,11 @@ function wireEvents() {
 
   /** Update Step/Continue button highlight state. */
   function updateStepButtons() {
+    // Show Step/Continue only when stepping is active
+    const show = stepping.active;
+    btnStep.classList.toggle("hidden", !show);
+    btnContinue.classList.toggle("hidden", !show);
+
     if (stepping.suspended && stepping.queue.length > 0) {
       btnStep.classList.add("step-highlight");
       btnContinue.classList.add("step-highlight");
@@ -533,19 +558,11 @@ function wireEvents() {
   });
 
   // ── REPL ──
-  replInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      // Shift+Enter: always insert newline (let default happen)
-      if (e.shiftKey) return;
-
+  function submitInput() {
       const text = replInput.value.trim();
-      if (!text) { e.preventDefault(); return; }
-
-      // If expression is incomplete (unbalanced parens), insert newline
+      if (!text) return;
       if (!isExpressionComplete(text)) return;
 
-      // Expression complete — submit
-      e.preventDefault();
       const fullText = replInput.value.trimEnd();
       const inputLines = fullText.split('\n');
       const numLines = inputLines.length;
@@ -564,7 +581,6 @@ function wireEvents() {
 
       // Set up step recording if stepping is active
       const wasQueueing = stepping.active;
-      console.log("[step] eval start: stepping.active=", stepping.active);
       if (wasQueueing) {
         stepping.queueing = true;
         stepping.queue = [];
@@ -578,6 +594,7 @@ function wireEvents() {
         try {
           const res = callbacks.eval(fullText);
           resultText = schemeToString(res);
+
         } catch (err) {
           console.error("eval error:", err);
           resultText = err.message || "unknown error";
@@ -596,10 +613,6 @@ function wireEvents() {
       stepping.queueing = false;
       finalizeCurrentStep();
 
-      console.log("[step] eval done: wasQueueing=", wasQueueing,
-                  "boundariesSeen=", stepping.boundariesSeen,
-                  "queue.length=", stepping.queue.length,
-                  "isError=", isError);
       if (wasQueueing && stepping.boundariesSeen > 0 && !isError) {
         // Enter stepping suspension — replay on Step/Continue clicks
         stepping.suspended = true;
@@ -608,16 +621,29 @@ function wireEvents() {
         replInput.disabled = true;
         showTracePanel();
         updateStepButtons();
-        console.log("[step] entered suspension with", stepping.queue.length, "step groups");
       } else {
         // No stepping, or no boundaries, or error — apply immediately
-        console.log("[step] NOT entering suspension");
         if (wasQueueing) flushStepQueue();
         addToReplLog(thisLine, fullText, resultText, isError);
         replLineNumber += numLines;
         updateLineNumGutter();
         if (!isError) setStatus("Ready", "ready");
       }
+  }
+
+  replInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      // Shift+Enter: always insert newline (let default happen)
+      if (e.shiftKey) return;
+
+      const text = replInput.value.trim();
+      if (!text) { e.preventDefault(); return; }
+
+      // If expression is incomplete (unbalanced parens), insert newline
+      if (!isExpressionComplete(text)) return;
+
+      e.preventDefault();
+      submitInput();
     } else if (e.key === "ArrowUp") {
       // Only navigate history if cursor is at the very start
       if (replInput.selectionStart === 0 && replInput.selectionEnd === 0) {
@@ -677,6 +703,10 @@ function wireEvents() {
     if (callbacks.gc) {
       try { callbacks.gc(); } catch (e) { console.error("gc:", e); }
     }
+    // Re-layout after GC removes nodes
+    if (EnvDiagram.getLayout() === "grid") {
+      EnvDiagram.setLayout("grid");
+    }
   });
 
   btnClear.addEventListener("click", () => {
@@ -699,6 +729,10 @@ function wireEvents() {
     view.diagramExists = false;
     updateZoomLabel();
     document.getElementById("empty-state").classList.remove("hidden");
+    // Reset Scheme evaluator state so the global frame is re-emitted
+    if (callbacks.clear) {
+      try { callbacks.clear(); } catch (e) { console.error("clear:", e); }
+    }
   });
 
   // ── Trace panel toggle ──
@@ -713,12 +747,145 @@ function wireEvents() {
     document.getElementById("trace-output").innerHTML = "";
   });
 
-  // ── Empty state examples — click to insert ──
-  document.querySelectorAll(".empty-examples code").forEach((el) => {
-    el.addEventListener("click", () => {
-      replInput.value = el.textContent;
-      replInput.focus();
+  // ── Examples dropdown ──
+  // ── Examples flyout menu ──
+  const btnExamples = document.getElementById("btn-examples");
+  const examplesFlyout = document.getElementById("examples-flyout");
+  if (window.ENVDRAW_EXAMPLES) {
+    window.ENVDRAW_EXAMPLES.forEach((ex) => {
+      const btn = document.createElement("button");
+      btn.className = "ex-btn";
+      btn.textContent = ex.name;
+      btn.addEventListener("click", () => {
+        examplesFlyout.classList.add("hidden");
+        replInput.value = ex.code;
+        submitInput();
+        replInput.focus();
+      });
+      examplesFlyout.appendChild(btn);
     });
+  }
+  btnExamples.addEventListener("click", () => {
+    examplesFlyout.classList.toggle("hidden");
+  });
+  // Close flyout when clicking outside
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("#examples-menu")) {
+      examplesFlyout.classList.add("hidden");
+    }
+  });
+
+  // ── Layout mode selector ──
+  const selLayout = document.getElementById("sel-layout");
+  const btnRandomizeTop = document.getElementById("btn-randomize");
+
+  function updateLayoutUI() {
+    const isForce = selLayout.value === "force";
+    btnRandomizeTop.classList.toggle("hidden", !isForce);
+  }
+
+  selLayout.addEventListener("change", () => {
+    EnvDiagram.setLayout(selLayout.value);
+    updateLayoutUI();
+  });
+  // Reset dropdown to match actual layout state (browser may restore stale value)
+  selLayout.value = EnvDiagram.getLayout();
+  updateLayoutUI();
+
+  // ── Toolbar randomize button ──
+  function randomizeForces() {
+    const panel = document.getElementById("force-panel");
+    panel.querySelectorAll("input[data-key]").forEach(input => {
+      const min = parseFloat(input.min);
+      const max = parseFloat(input.max);
+      const step = parseFloat(input.step) || 1;
+      const range = max - min;
+      const val = min + Math.round((Math.random() * range) / step) * step;
+      const rounded = parseFloat(val.toFixed(4));
+      input.value = rounded;
+      input.nextElementSibling.textContent = rounded;
+      EnvDiagram.setForceParam(input.dataset.key, rounded);
+    });
+  }
+  btnRandomizeTop.addEventListener("click", randomizeForces);
+
+  // ── Force control panel ──
+  const forcePanel = document.getElementById("force-panel");
+  const btnForces = document.getElementById("btn-forces");
+  const btnCloseForces = document.getElementById("btn-close-forces");
+  const btnReheat = document.getElementById("btn-reheat");
+  const btnResetForces = document.getElementById("btn-reset-forces");
+
+  // Populate slider values from current config
+  function syncForceSliders() {
+    const cfg = EnvDiagram.getForceConfig();
+    forcePanel.querySelectorAll("input[data-key]").forEach(input => {
+      const key = input.dataset.key;
+      if (key in cfg) {
+        input.value = cfg[key];
+        input.nextElementSibling.textContent = cfg[key];
+      }
+    });
+  }
+
+  // Save defaults for reset
+  const defaultForceConfig = EnvDiagram.getForceConfig();
+
+  btnForces.addEventListener("click", () => {
+    forcePanel.classList.toggle("hidden");
+    if (!forcePanel.classList.contains("hidden")) {
+      syncForceSliders();
+      replArea.classList.add("collapsed");
+    }
+  });
+  btnCloseForces.addEventListener("click", () => {
+    forcePanel.classList.add("hidden");
+  });
+
+  // Wire slider input events
+  forcePanel.querySelectorAll("input[data-key]").forEach(input => {
+    input.addEventListener("input", () => {
+      const val = parseFloat(input.value);
+      input.nextElementSibling.textContent = val;
+      EnvDiagram.setForceParam(input.dataset.key, val);
+    });
+  });
+
+  btnReheat.addEventListener("click", () => {
+    EnvDiagram.applyForceConfig();
+  });
+
+  const btnRandomize = document.getElementById("btn-randomize-forces");
+  btnRandomize.addEventListener("click", () => {
+    randomizeForces();
+  });
+
+  btnResetForces.addEventListener("click", () => {
+    Object.keys(defaultForceConfig).forEach(k => {
+      EnvDiagram.setForceParam(k, defaultForceConfig[k]);
+    });
+    syncForceSliders();
+  });
+
+  // ── Collapsible REPL ──
+  replHandle.addEventListener("click", () => {
+    replArea.classList.toggle("collapsed");
+    if (!replArea.classList.contains("collapsed")) {
+      replInput.focus();
+    }
+  });
+
+  // Collapse when interacting with the diagram
+  const canvasContainer = document.getElementById("canvas-container");
+  canvasContainer.addEventListener("pointerdown", (e) => {
+    // Don't collapse if clicking zoom/force controls
+    if (e.target.closest('#zoom-controls') || e.target.closest('#force-panel')) return;
+    replArea.classList.add("collapsed");
+  });
+
+  // Expand when focusing the REPL input
+  replInput.addEventListener("focus", () => {
+    replArea.classList.remove("collapsed");
   });
 
   // ── Keyboard shortcuts ──
@@ -753,7 +920,11 @@ function wireEvents() {
       setTimeout(updateZoomLabel, 510);
     } else if (e.key === "/" && document.activeElement !== replInput) {
       e.preventDefault();
+      replArea.classList.remove("collapsed");
       replInput.focus();
+    } else if (e.key === "r" && !e.ctrlKey && !e.metaKey && document.activeElement !== replInput) {
+      e.preventDefault();
+      replHandle.click();
     }
   });
 
@@ -769,7 +940,7 @@ async function boot() {
 
   try {
     await Scheme.load_main("envdraw.wasm?" + Date.now(), {
-      reflect_wasm_dir: ".",
+      reflect_wasm_dir: "hoot",
       user_imports: {
         ctx: ctxImports,
         app: appImports,

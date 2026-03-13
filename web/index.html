@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>EnvDraw — Environment Diagrams</title>
   <link rel="stylesheet" href="style.css">
-  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script src="d3.v7.min.js"></script>
 </head>
 <body>
   <div id="app">
@@ -15,21 +15,31 @@
       <div class="toolbar-left">
         <span class="brand">EnvDraw</span>
         <div class="toolbar-sep"></div>
-        <button id="btn-step" class="tb-btn" title="Step one evaluation (F10)">
-          <span class="tb-icon">▶︎</span> Step
-        </button>
-        <button id="btn-continue" class="tb-btn" title="Continue without stopping (F5)">
-          <span class="tb-icon">⏩</span> Continue
-        </button>
+        <button id="btn-gc" class="tb-btn tb-btn-subtle" title="Garbage collect">GC</button>
+        <button id="btn-clear" class="tb-btn tb-btn-subtle" title="Clear diagram and trace">Clear</button>
         <div class="toolbar-sep"></div>
         <label class="tb-toggle" title="Toggle stepping mode">
           <input type="checkbox" id="chk-stepping">
           <span class="toggle-track"><span class="toggle-thumb"></span></span>
           <span class="toggle-label">Stepping</span>
         </label>
+        <button id="btn-step" class="tb-btn tb-step-btn hidden" title="Step one evaluation (F10)">
+          <span class="tb-icon">▶︎</span> Step
+        </button>
+        <button id="btn-continue" class="tb-btn tb-step-btn hidden" title="Continue without stopping (F5)">
+          <span class="tb-icon">⏩</span> Continue
+        </button>
         <div class="toolbar-sep"></div>
-        <button id="btn-gc" class="tb-btn tb-btn-subtle" title="Garbage collect">GC</button>
-        <button id="btn-clear" class="tb-btn tb-btn-subtle" title="Clear diagram and trace">Clear</button>
+        <select id="sel-layout" class="tb-select" title="Diagram layout mode" autocomplete="off">
+          <option value="force">Force</option>
+          <option value="grid">Grid</option>
+        </select>
+        <button id="btn-randomize" class="tb-btn tb-btn-subtle hidden" title="Randomize forces">Randomize</button>
+        <div class="toolbar-sep"></div>
+        <div id="examples-menu" class="examples-menu">
+          <button id="btn-examples" class="tb-btn tb-btn-subtle" title="Load an example program">Examples ▾</button>
+          <div id="examples-flyout" class="examples-flyout hidden"></div>
+        </div>
       </div>
       <div class="toolbar-right">
         <span id="status-indicator" class="status-ready">Ready</span>
@@ -49,17 +59,46 @@
           <button id="btn-zoom-reset" class="zoom-btn zoom-label" title="Reset zoom (0)">100%</button>
           <button id="btn-zoom-out" class="zoom-btn" title="Zoom out (−)">−</button>
           <button id="btn-fit" class="zoom-btn" title="Fit diagram to view (F)">⊞</button>
+          <button id="btn-forces" class="zoom-btn" title="Force controls (⚙)">⚙</button>
+        </div>
+        <!-- Force control panel -->
+        <div id="force-panel" class="force-panel hidden">
+          <div class="fp-header">
+            <span>Force Controls</span>
+            <button id="btn-close-forces" class="fp-close" title="Close">✕</button>
+          </div>
+          <div class="fp-section">Charge (repulsion)</div>
+          <label class="fp-row">Frame <input type="range" min="-500" max="0" step="5" data-key="chargeFrame"><span class="fp-val"></span></label>
+          <label class="fp-row">Proc <input type="range" min="-300" max="0" step="5" data-key="chargeProc"><span class="fp-val"></span></label>
+          <label class="fp-row">Pair <input type="range" min="-100" max="0" step="1" data-key="chargePair"><span class="fp-val"></span></label>
+          <div class="fp-section">Link distance</div>
+          <label class="fp-row">Env <input type="range" min="20" max="400" step="5" data-key="linkDistEnv"><span class="fp-val"></span></label>
+          <label class="fp-row">Binding <input type="range" min="20" max="300" step="5" data-key="linkDistBind"><span class="fp-val"></span></label>
+          <label class="fp-row">Proc-Env <input type="range" min="20" max="300" step="5" data-key="linkDistProcEnv"><span class="fp-val"></span></label>
+          <label class="fp-row">Car <input type="range" min="5" max="150" step="5" data-key="linkDistCar"><span class="fp-val"></span></label>
+          <label class="fp-row">Cdr <input type="range" min="5" max="150" step="5" data-key="linkDistCdr"><span class="fp-val"></span></label>
+          <label class="fp-row">Cohesion <input type="range" min="1" max="80" step="1" data-key="linkDistCohesion"><span class="fp-val"></span></label>
+          <div class="fp-section">Link strength</div>
+          <label class="fp-row">Binding <input type="range" min="0" max="2" step="0.05" data-key="linkStrBind"><span class="fp-val"></span></label>
+          <label class="fp-row">Proc-Env <input type="range" min="0" max="2" step="0.05" data-key="linkStrProcEnv"><span class="fp-val"></span></label>
+          <label class="fp-row">Car <input type="range" min="0" max="2" step="0.05" data-key="linkStrCar"><span class="fp-val"></span></label>
+          <label class="fp-row">Cdr <input type="range" min="0" max="2" step="0.05" data-key="linkStrCdr"><span class="fp-val"></span></label>
+          <label class="fp-row">Cohesion <input type="range" min="0" max="3" step="0.1" data-key="linkStrCohesion"><span class="fp-val"></span></label>
+          <div class="fp-section">Simulation</div>
+          <label class="fp-row">Friction <input type="range" min="0.1" max="1" step="0.05" data-key="velocityDecay"><span class="fp-val"></span></label>
+          <label class="fp-row">Cooling <input type="range" min="0.001" max="0.2" step="0.005" data-key="alphaDecay"><span class="fp-val"></span></label>
+          <label class="fp-row">Collide <input type="range" min="0" max="1.5" step="0.05" data-key="collideStrength"><span class="fp-val"></span></label>
+          <div class="fp-actions">
+            <button id="btn-reheat" class="fp-btn">Reheat</button>
+            <button id="btn-randomize-forces" class="fp-btn">Randomize</button>
+            <button id="btn-reset-forces" class="fp-btn">Reset</button>
+          </div>
         </div>
         <!-- Empty state -->
         <div id="empty-state">
           <div class="empty-icon">λ</div>
           <div class="empty-title">No diagram yet</div>
-          <div class="empty-hint">Type a Scheme expression below to begin</div>
-          <div class="empty-examples">
-            <code>(define x 42)</code>
-            <code>(define (square n) (* n n))</code>
-            <code>(square 5)</code>
-          </div>
+          <div class="empty-hint">Type a Scheme expression below, or pick one from <strong>Examples</strong> in the toolbar</div>
         </div>
       </div>
 
@@ -77,24 +116,31 @@
     </div>
 
     <!-- REPL -->
-    <div id="repl-area">
-      <div id="repl-log"></div>
-      <div id="repl-input-row">
-        <div id="input-line-nums"><span>1</span></div>
-        <span class="prompt">&gt;</span>
-        <textarea id="repl-input" rows="5" autofocus
-                  placeholder="Type a Scheme expression… (Shift+Enter for newline)"
-                  spellcheck="false" autocomplete="off"></textarea>
+    <div id="repl-area" class="collapsed">
+      <div id="repl-handle" title="Toggle REPL (R)">
+        <span class="repl-handle-icon">▼</span>
+        <span class="repl-handle-label">REPL</span>
+      </div>
+      <div id="repl-body">
+        <div id="repl-log"></div>
+        <div id="repl-input-row">
+          <div id="input-line-nums"><span>1</span></div>
+          <span class="prompt">&gt;</span>
+          <textarea id="repl-input" rows="5" autofocus
+                    placeholder="Type a Scheme expression… (Shift+Enter for newline)"
+                    spellcheck="false" autocomplete="off"></textarea>
+        </div>
       </div>
     </div>
 
   </div>
-  <script type="text/javascript" src="reflect.js"></script>
+  <script type="text/javascript" src="examples.js"></script>
+  <script type="text/javascript" src="hoot/reflect.js"></script>
   <script type="text/javascript" src="d3-diagram.js"></script>
   <script>
     // Cache-bust boot.js — bump version when boot.js changes
     const s = document.createElement("script");
-    s.src = "boot.js?v=11";
+    s.src = "boot.js?v=16";
     document.body.appendChild(s);
   </script>
 </body>

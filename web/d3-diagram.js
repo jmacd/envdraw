@@ -15,8 +15,11 @@
 const EnvDiagram = (() => {
   // ─── Data ────────────────────────────────────────────────────────
   let nodes = [];     // { id, type, name, parentId, width, height, color, ... }
-  let edges = [];     // { id, source, target, edgeType, ... }
+  let edges = [];     // { id, source: nodeObj, target: nodeObj, edgeType, ... }
   let bindings = {};  // frameId → [ { varName, value, valueType, procId } ]
+  const nodeMap = new Map();  // id → node object (kept in sync with nodes[])
+  let lastPairNode = null;   // most recently added pair node (avoids O(n) filter)
+  let lastFrameNode = null;  // most recently added frame node
 
   // ─── D3 handles ─────────────────────────────────────────────────
   let svg, zoomLayer, edgeGroup, nodeGroup, defs;
@@ -25,10 +28,32 @@ const EnvDiagram = (() => {
   let width = 800, height = 600;
   let autoFitTimer = null;  // schedules fitToView after first mutations
   let renderTimer = null;   // debounces simulation restarts across rapid mutations
+  let layoutMode = "force"; // "force" or "grid"
 
   // ─── Configuration ──────────────────────────────────────────────
   const FRAME_MIN_W = 140;
   const FRAME_HEADER_H = 24;
+
+  // Tunable force parameters — exposed via control panel
+  const forceConfig = {
+    chargeFrame:    -80,
+    chargeProc:     0,
+    chargePair:     -5,
+    linkDistEnv:    160,
+    linkDistBind:   90,
+    linkDistProcEnv: 60,
+    linkDistCar:    40,
+    linkDistCdr:    45,
+    linkDistCohesion: 15,
+    linkStrBind:    0.05,
+    linkStrProcEnv: 0.8,
+    linkStrCar:     0.8,
+    linkStrCdr:     0.8,
+    linkStrCohesion: 1.5,
+    velocityDecay:  0.82,
+    alphaDecay:     0.08,
+    collideStrength: 0.8,
+  };
   const BINDING_H = 18;
   const BINDING_PAD = 8;
   const PROC_CELL_W = 30;
@@ -39,10 +64,10 @@ const EnvDiagram = (() => {
   const PAIR_ATOM_PAD = 6;  // padding around atom labels
   const ANIM_DURATION = 400;
 
-  // Color palette for frames
+  // Color palette for frames — muted cool pastels
   const COLORS = [
-    "#d4edda", "#fff3cd", "#cce5ff",
-    "#fefcbf", "#f8d7da", "#e8daef"
+    "#c6def1", "#bde0d7", "#c8dbc7",
+    "#d0d5e1", "#b7dae0", "#d6dceb"
   ];
   let colorIndex = 0;
   function nextColor() {
@@ -66,7 +91,25 @@ const EnvDiagram = (() => {
   }
 
   function nodeById(id) {
-    return nodes.find(n => n.id === id);
+    return nodeMap.get(id);
+  }
+
+  /** Add a node to the graph data structures. */
+  function pushNode(node) {
+    nodes.push(node);
+    nodeMap.set(node.id, node);
+    markComponentsDirty();
+  }
+
+  /** Add an edge, resolving source/target to node objects immediately. */
+  function pushEdge(sourceId, targetId, edgeType) {
+    const eid = edgeId(sourceId, targetId, edgeType);
+    if (edges.find(e => e.id === eid)) return;
+    const s = nodeMap.get(sourceId);
+    const t = nodeMap.get(targetId);
+    if (!s || !t) return;
+    edges.push({ id: eid, source: s, target: t, edgeType });
+    markComponentsDirty();
   }
 
   function frameBindings(frameId) {
@@ -87,6 +130,146 @@ const EnvDiagram = (() => {
       maxW = Math.max(maxW, labelW);
     }
     return Math.max(FRAME_MIN_W, maxW);
+  }
+
+  // ─── Connected-component detection & group force ─────────────
+
+  // Cached component assignment: nodeId → componentIndex
+  let componentMap = new Map();
+  let components = [];  // [{ index, nodeIds, cx, cy, hw, hh }]
+  let componentsDirty = true;  // rebuild on next tick
+
+  function markComponentsDirty() { componentsDirty = true; }
+
+  /** BFS to find connected components in the current graph. */
+  function rebuildComponents() {
+    componentMap.clear();
+    components = [];
+    const adj = new Map();
+    // Build adjacency from edges
+    for (const e of edges) {
+      const sid = e.source.id || e.source;
+      const tid = e.target.id || e.target;
+      if (!adj.has(sid)) adj.set(sid, []);
+      if (!adj.has(tid)) adj.set(tid, []);
+      adj.get(sid).push(tid);
+      adj.get(tid).push(sid);
+    }
+    const visited = new Set();
+    let idx = 0;
+    for (const n of nodes) {
+      if (visited.has(n.id)) continue;
+      const queue = [n.id];
+      visited.add(n.id);
+      const members = [];
+      while (queue.length > 0) {
+        const cur = queue.shift();
+        members.push(cur);
+        componentMap.set(cur, idx);
+        const neighbors = adj.get(cur) || [];
+        for (const nb of neighbors) {
+          if (!visited.has(nb)) {
+            visited.add(nb);
+            queue.push(nb);
+          }
+        }
+      }
+      components.push({ index: idx, nodeIds: members, cx: 0, cy: 0, hw: 0, hh: 0 });
+      idx++;
+    }
+    componentsDirty = false;
+  }
+
+  /**
+   * Custom D3 force: keeps connected components cohesive and repels
+   * component bounding boxes from overlapping.  Each component behaves
+   * like a soft "force box" — internal forces work freely within the
+   * box, but the box itself is pushed away from other boxes.
+   */
+  function forceComponents() {
+    let fnodes;
+
+    function force(alpha) {
+      if (componentsDirty || components.length === 0) rebuildComponents();
+      if (components.length <= 1) return;  // single component, nothing to do
+
+      // 1. Compute each component's centroid and half-extents
+      for (const comp of components) {
+        let sx = 0, sy = 0;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const nid of comp.nodeIds) {
+          const n = nodeMap.get(nid);
+          if (!n) continue;
+          sx += n.x; sy += n.y;
+          const hw = (n.width || 40) / 2, hh = (n.height || 40) / 2;
+          if (n.x - hw < minX) minX = n.x - hw;
+          if (n.x + hw > maxX) maxX = n.x + hw;
+          if (n.y - hh < minY) minY = n.y - hh;
+          if (n.y + hh > maxY) maxY = n.y + hh;
+        }
+        const cnt = comp.nodeIds.length || 1;
+        comp.cx = sx / cnt;
+        comp.cy = sy / cnt;
+        comp.hw = (maxX - minX) / 2 + 30;  // padding
+        comp.hh = (maxY - minY) / 2 + 30;
+      }
+
+      // 2. Repel overlapping component bounding boxes
+      for (let i = 0; i < components.length; i++) {
+        for (let j = i + 1; j < components.length; j++) {
+          const ci = components[i], cj = components[j];
+          const dx = ci.cx - cj.cx;
+          const dy = ci.cy - cj.cy;
+          const overlapX = (ci.hw + cj.hw) - Math.abs(dx);
+          const overlapY = (ci.hh + cj.hh) - Math.abs(dy);
+          if (overlapX <= 0 || overlapY <= 0) continue;  // no overlap
+
+          // Push apart along the axis of least overlap
+          const pushX = overlapX < overlapY;
+          const strength = alpha * 0.3;
+          const ni = ci.nodeIds.length, nj = cj.nodeIds.length;
+
+          if (pushX) {
+            const sign = dx >= 0 ? 1 : -1;
+            const push = overlapX * strength;
+            for (const nid of ci.nodeIds) {
+              const n = nodeMap.get(nid);
+              if (n && n.fx == null) n.vx += sign * push / ni;
+            }
+            for (const nid of cj.nodeIds) {
+              const n = nodeMap.get(nid);
+              if (n && n.fx == null) n.vx -= sign * push / nj;
+            }
+          } else {
+            const sign = dy >= 0 ? 1 : -1;
+            const push = overlapY * strength;
+            for (const nid of ci.nodeIds) {
+              const n = nodeMap.get(nid);
+              if (n && n.fx == null) n.vy += sign * push / ni;
+            }
+            for (const nid of cj.nodeIds) {
+              const n = nodeMap.get(nid);
+              if (n && n.fx == null) n.vy -= sign * push / nj;
+            }
+          }
+        }
+      }
+
+      // 3. Gentle intra-component cohesion: pull nodes toward their
+      //    component centroid so the group stays together as a unit.
+      for (const comp of components) {
+        if (comp.nodeIds.length <= 1) continue;
+        for (const nid of comp.nodeIds) {
+          const n = nodeMap.get(nid);
+          if (!n || n.fx != null) continue;
+          n.vx += (comp.cx - n.x) * alpha * 0.008;
+          n.vy += (comp.cy - n.y) * alpha * 0.008;
+        }
+      }
+    }
+
+    force.initialize = function(n) { fnodes = n; };
+    return force;
   }
 
   // ─── Initialization ─────────────────────────────────────────────
@@ -145,40 +328,56 @@ const EnvDiagram = (() => {
     edgeGroup = zoomLayer.append("g").attr("class", "edges")
       .attr("pointer-events", "none");
 
-    // D3-zoom
+    // D3-zoom — disable auto-fit when user manually zooms/pans
     zoomBehavior = d3.zoom()
-      .scaleExtent([0.1, 5])
+      .scaleExtent([0.05, 5])
       .on("zoom", (event) => {
         zoomLayer.attr("transform", event.transform);
+        // If zoom was initiated by user gesture (not programmatic), disable auto-fit
+        if (event.sourceEvent) autoFitEnabled = false;
       });
     svg.call(zoomBehavior);
 
     // Initialize force simulation
     simulation = d3.forceSimulation(nodes)
-      .force("charge", d3.forceManyBody().strength(-150))
+      // Only frames repel; scale by count to keep layout compact
+      .force("charge", d3.forceManyBody().strength(d => {
+        if (d.type !== "frame") return 0;
+        // Scale frame charge inversely with count
+        const fc = nodes.filter(n => n.type === "frame").length;
+        const scale = fc > 20 ? 0.15 : fc > 10 ? 0.3 : fc > 5 ? 0.5 : 1.0;
+        return forceConfig.chargeFrame * scale;
+      }))
       .force("collide", d3.forceCollide().radius(d => {
         if (d.type === "frame")
           return Math.max(d.width, d.height) * 0.6 + 20;
         if (d.type === "pair-null" || d.type === "pair-atom")
-          return Math.max(d.width || 14, d.height || 14) * 0.5 + 4;
-        return Math.max(d.width || 60, d.height || 48) * 0.5 + 10;
-      }).strength(0.8).iterations(2))
+          return Math.max(d.width || 14, d.height || 14) * 0.5;
+        if (d.type === "pair")
+          return Math.max(d.width || 60, d.height || 48) * 0.4;
+        // Procedures: modest collision radius
+        return Math.max(d.width || 60, d.height || 48) * 0.4 + 5;
+      }).strength(forceConfig.collideStrength).iterations(2))
       .force("link", d3.forceLink(edges)
         .id(d => d.id)
         .distance(d => {
-          if (d.edgeType === "env") return 160;
-          if (d.edgeType === "proc-env") return 120;
-          if (d.edgeType === "binding") return 130;
-          if (d.edgeType === "car") return 65;
-          if (d.edgeType === "cdr") return 70;
+          if (d.edgeType === "env") return forceConfig.linkDistEnv;
+          if (d.edgeType === "proc-env") return forceConfig.linkDistProcEnv;
+          if (d.edgeType === "binding") return forceConfig.linkDistBind;
+          if (d.edgeType === "car" && d.source.treeId && d.source.treeId === d.target.treeId)
+            return forceConfig.linkDistCohesion;
+          if (d.edgeType === "car") return forceConfig.linkDistCar;
+          if (d.edgeType === "cdr") return forceConfig.linkDistCdr;
           return 120;
         })
         .strength(d => {
           if (d.edgeType === "env") return 0.2;
-          if (d.edgeType === "binding") return 0.15;
-          if (d.edgeType === "proc-env") return 0.15;
-          if (d.edgeType === "car") return 0.6;
-          if (d.edgeType === "cdr") return 0.6;
+          if (d.edgeType === "binding") return forceConfig.linkStrBind;
+          if (d.edgeType === "proc-env") return forceConfig.linkStrProcEnv;
+          if (d.edgeType === "car" && d.source.treeId && d.source.treeId === d.target.treeId)
+            return forceConfig.linkStrCohesion;
+          if (d.edgeType === "car") return forceConfig.linkStrCar;
+          if (d.edgeType === "cdr") return forceConfig.linkStrCdr;
           return 0.2;
         })
       )
@@ -199,28 +398,30 @@ const EnvDiagram = (() => {
         }
         return height / 2;
       }).strength(d => {
-        // Very strong Y keeps hierarchy stable
         if (d.type === "frame") return 1.0;
-        if (d.type === "procedure") return 0.7;
+        if (d.type === "procedure") return 1.0;
         // Weak Y for pair nodes — link force does the positioning
-        if (d.type === "pair" || d.type === "pair-atom" || d.type === "pair-null") return 0.02;
+        if (d.type === "pair" || d.type === "pair-atom" || d.type === "pair-null") return 0.08;
         return 0.3;
       }))
       .force("x", d3.forceX().x(d => {
-        // Spread procedures to the right of their frame
+        // Procedures: pull toward their parent frame's X position
         if (d.type === "procedure" && d.frameId) {
           const fn = nodeById(d.frameId);
-          if (fn) return (fn.x || width / 2) + 180;
+          if (fn) return (fn.x || width / 2) + 80;
         }
         return width / 2;
       }).strength(d => {
-        if (d.type === "procedure") return 0.12;
-        if (d.type === "pair" || d.type === "pair-atom" || d.type === "pair-null") return 0.02;
+        if (d.type === "procedure") return 0.8;
+        if (d.type === "pair" || d.type === "pair-atom" || d.type === "pair-null") return 0.06;
         return 0.08;
       }))
-      .velocityDecay(0.7)
-      .alphaDecay(0.05)
-      .on("tick", ticked);
+      .force("center", d3.forceCenter(width / 2, height / 2).strength(0.05))
+      .force("components", forceComponents())
+      .velocityDecay(forceConfig.velocityDecay)
+      .alphaDecay(forceConfig.alphaDecay)
+      .on("tick", ticked)
+      .stop();  // Don't auto-start; scheduleRender() handles restarts
 
     // Observe container resizing
     const ro = new ResizeObserver(() => {
@@ -241,45 +442,100 @@ const EnvDiagram = (() => {
   }
 
   // ─── Force tick → update SVG positions ──────────────────────────
-  function ticked() {
-    // Update edge paths
-    edgeGroup.selectAll(".edge")
-      .attr("d", d => computeEdgePath(d));
+  let autoFitEnabled = true;  // auto-zoom to fit diagram
+  let tickCount = 0;
 
-    // Update node positions
-    nodeGroup.selectAll(".node")
-      .attr("transform", d => `translate(${d.x - (d.width || 0) / 2},${d.y - (d.height || 0) / 2})`);
+  // Cached selections for ticked() — updated in renderEdges/renderNodes
+  let edgeSel = null;
+  let nodeSel = null;
+
+  function ticked() {
+    // Soft containment: dampen velocities for nodes that venture far from center.
+    // This prevents runaway spread without the jitter of hard walls.
+    const cx = width / 2, cy = height / 2;
+    const boundW = width * 0.8, boundH = height * 0.8;
+    for (const n of nodes) {
+      if (n.fx != null) continue;
+      const dx = Math.abs(n.x - cx);
+      const dy = Math.abs(n.y - cy);
+      // Beyond soft bounds, dampen velocity proportionally
+      if (dx > boundW) {
+        const over = (dx - boundW) / boundW;
+        n.vx *= Math.max(0.1, 1 - over * 0.5);
+        // Gentle pull back
+        n.x += (cx - n.x) * over * 0.02;
+      }
+      if (dy > boundH) {
+        const over = (dy - boundH) / boundH;
+        n.vy *= Math.max(0.1, 1 - over * 0.5);
+        n.y += (cy - n.y) * over * 0.02;
+      }
+    }
+
+    // Update SVG using cached selections
+    if (edgeSel) edgeSel.attr("d", computeEdgePath);
+    if (nodeSel) nodeSel.attr("transform", d => `translate(${d.x - (d.width || 0) / 2},${d.y - (d.height || 0) / 2})`);
+
+    // Continuous auto-fit: zoom to keep all nodes visible.
+    // Runs every ~10 ticks to avoid expensive fitToView on every tick.
+    if (autoFitEnabled && nodes.length > 0) {
+      tickCount++;
+      if (tickCount % 10 === 0) {
+        scheduleFit();
+      }
+    }
+  }
+
+  // Debounced fit — avoid calling fitToView on every tick
+  let fitTimer = null;
+  function scheduleFit() {
+    if (fitTimer !== null) return;
+    fitTimer = setTimeout(() => {
+      fitTimer = null;
+      // During active simulation, use instant zoom (no transition) for
+      // smooth tracking.  Final fit after settle uses a transition.
+      const isActive = simulation && simulation.alpha() > 0.01;
+      fitToView(isActive ? 0 : 200);
+    }, 100);
   }
 
   // ─── Edge path computation ──────────────────────────────────────
+
+  // Procedure cons-cell center helpers (hoisted for perf — avoid
+  // recreating closures on every computeEdgePath call)
+  function procCellCX(node) {
+    return node.x - (node.width || PROC_CELL_W * 2) / 2 + PROC_CELL_W;
+  }
+  function procCellCY(node) {
+    return node.y - (node.height || (PROC_CELL_H + PROC_LABEL_H)) / 2 + PROC_CELL_H / 2;
+  }
+
   function computeEdgePath(d) {
-    const s = typeof d.source === "object" ? d.source : nodeById(d.source);
-    const t = typeof d.target === "object" ? d.target : nodeById(d.target);
+    // source/target are always node objects (set by pushEdge)
+    const s = d.source;
+    const t = d.target;
     if (!s || !t) return "";
+
+    // Self-loop: tight loop from cdr dot, arcing up, back to top of cdr cell
+    if (s.id === t.id) {
+      const w = s.width || 60;
+      const h = s.height || 30;
+      // cdr dot center in world coords
+      const dotX = s.x - w / 2 + PAIR_CELL_W * 1.5;
+      const dotY = s.y;  // vertical center of cell
+      // End at top edge of cdr cell
+      const endX = dotX;
+      const endY = s.y - h / 2;
+      const r = 22;
+      // Loop right and up, then back down to the top of the same cell
+      return `M${dotX},${dotY} C${dotX + r * 1.8},${dotY - r * 0.5} ${endX + r * 1.8},${endY - r * 0.5} ${endX},${endY}`;
+    }
 
     let sx, sy, tx, ty;
     const sw = s.width || FRAME_MIN_W;
     const sh = s.height || 60;
     const tw = t.width || FRAME_MIN_W;
     const th = t.height || 60;
-
-    // Procedure dots are in the cons-cell rect, which sits at the top-left
-    // of the node bounding box.  The node center (d.x, d.y) is the center
-    // of the full bounding box (which includes the possibly-wider lambda
-    // label text below the cell).  These helpers compute the cons-cell
-    // center in world coords so arrows terminate at the actual cell.
-    function procCellCX(node) {
-      // Cons cell starts at local x=0, is PROC_CELL_W*2 wide.
-      // Node is translated to (node.x - node.width/2, ...).
-      // So cell center X = node.x - node.width/2 + PROC_CELL_W.
-      return node.x - (node.width || PROC_CELL_W * 2) / 2 + PROC_CELL_W;
-    }
-    function procCellCY(node) {
-      // Cons cell starts at local y=0, is PROC_CELL_H tall.
-      // Node is translated to (..., node.y - node.height/2).
-      // So cell center Y = node.y - node.height/2 + PROC_CELL_H/2.
-      return node.y - (node.height || (PROC_CELL_H + PROC_LABEL_H)) / 2 + PROC_CELL_H / 2;
-    }
 
     if (d.edgeType === "binding") {
       // From binding dot in source frame → target procedure or pair.
@@ -450,7 +706,30 @@ const EnvDiagram = (() => {
   }
 
   // ─── SVG rendering (D3 enter/update/exit) ──────────────────────
+
+  // Batch rendering: mutation methods call scheduleRender() instead of
+  // render() directly.  This coalesces all mutations from a synchronous
+  // eval into a single DOM update.
+  let renderScheduled = false;
+  function scheduleRender() {
+    if (!renderScheduled) {
+      renderScheduled = true;
+      // Stop the simulation immediately so it doesn't tick with stale data
+      // while we accumulate mutations.  It will restart in the deferred render.
+      simulation.stop();
+      setTimeout(() => {
+        renderScheduled = false;
+        render();
+      }, 0);
+    }
+  }
+
   function render() {
+    // In grid mode, recompute pair positions before rendering
+    if (layoutMode === "grid") {
+      applyGridLayout();
+    }
+
     renderEdges();
     renderNodes();
 
@@ -458,20 +737,34 @@ const EnvDiagram = (() => {
     // multiple mutations (frame + bindings + procedure + edges) in
     // rapid succession.  Restarting on every call pumps too much
     // energy into the system.  Instead, batch them.
-    simulation.nodes(nodes);
-    simulation.force("link").links(edges);
     if (renderTimer !== null) clearTimeout(renderTimer);
     renderTimer = setTimeout(() => {
       renderTimer = null;
-      simulation.alpha(0.2).restart();
-    }, 50);
 
-    // Auto-fit: debounce so we fit once after a burst of mutations settles
-    if (autoFitTimer !== null) clearTimeout(autoFitTimer);
-    autoFitTimer = setTimeout(() => {
-      autoFitTimer = null;
-      fitToView();
-    }, 900);
+      if (layoutMode === "grid") {
+        // Grid mode: no forces. Just update node/edge data and redraw.
+        simulation.stop();
+        simulation.nodes(nodes);
+        simulation.force("link").links(edges);
+        ticked();
+        if (autoFitEnabled) fitToView(200);
+        return;
+      }
+
+      simulation.stop();
+      // Scale frame repulsion for large diagrams
+      const n = nodes.length;
+      const scale = n > 100 ? 0.27 : n > 50 ? 0.53 : 1.0;
+      simulation.force("charge").strength(d => {
+        if (d.type === "frame") return forceConfig.chargeFrame * scale;
+        return 0;
+      });
+      // Edges already hold node object references (set by pushEdge),
+      // so D3's forceLink won't need to resolve string IDs.
+      simulation.nodes(nodes);
+      simulation.force("link").links(edges);
+      simulation.alpha(0.5).restart();
+    }, 50);
   }
 
   function renderEdges() {
@@ -479,7 +772,7 @@ const EnvDiagram = (() => {
       .data(edges, d => d.id);
 
     // Enter
-    sel.enter()
+    const entering = sel.enter()
       .append("path")
       .attr("class", d => `edge ${d.edgeType}`)
       .attr("fill", "none")
@@ -496,16 +789,25 @@ const EnvDiagram = (() => {
         if (d.edgeType === "env") return "url(#arrowhead-env)";
         if (d.edgeType === "car" || d.edgeType === "cdr") return "url(#arrowhead-pair)";
         return "url(#arrowhead)";
-      })
-      .attr("opacity", 0)
-      .transition().duration(ANIM_DURATION)
-      .attr("opacity", 1);
+      });
 
-    // Exit
+    // Skip fade-in animation for bulk creates (>20 new edges)
+    if (entering.size() > 20) {
+      entering.attr("opacity", 1);
+    } else {
+      entering.attr("opacity", 0)
+        .transition().duration(ANIM_DURATION)
+        .attr("opacity", 1);
+    }
+
+    // Exit edges
     sel.exit()
       .transition().duration(ANIM_DURATION)
       .attr("opacity", 0)
       .remove();
+
+    // Cache merged selection for ticked()
+    edgeSel = edgeGroup.selectAll(".edge");
   }
 
   function renderNodes() {
@@ -547,9 +849,13 @@ const EnvDiagram = (() => {
       renderPairNull(d3.select(this), d);
     });
 
-    // Animate in
-    enter.transition().duration(ANIM_DURATION)
-      .attr("opacity", 1);
+    // Skip fade-in animation for bulk creates (>20 new nodes)
+    if (enter.size() > 20) {
+      enter.attr("opacity", 1);
+    } else {
+      enter.transition().duration(ANIM_DURATION)
+        .attr("opacity", 1);
+    }
 
     // Update: reposition + re-render internals
     sel.each(function (d) {
@@ -562,13 +868,16 @@ const EnvDiagram = (() => {
       .transition().duration(ANIM_DURATION)
       .attr("opacity", 0)
       .remove();
+
+    // Cache merged selection for ticked()
+    nodeSel = nodeGroup.selectAll(".node");
   }
 
   // ─── Frame SVG ──────────────────────────────────────────────────
   function renderFrame(g, d) {
     const w = d.width || FRAME_MIN_W;
     const h = d.height || 60;
-    const color = d.color || "#d4edda";
+    const color = d.color || "#c6def1";
     const stroke = darken(color);
 
     // Background rect
@@ -591,7 +900,8 @@ const EnvDiagram = (() => {
     // Title
     g.append("text")
       .attr("class", "frame-title")
-      .attr("x", 8).attr("y", 16)
+      .attr("x", w / 2).attr("y", 16)
+      .attr("text-anchor", "middle")
       .attr("font-size", "11px")
       .attr("font-weight", "bold")
       .attr("font-family", "sans-serif")
@@ -667,7 +977,7 @@ const EnvDiagram = (() => {
   function renderProcedure(g, d) {
     const w = PROC_CELL_W * 2;
     const h = PROC_CELL_H;
-    const color = d.color || "#cce5ff";
+    const color = d.color || "#b7dae0";
     const stroke = darken(color);
 
     // Background rect (cons-pair style)
@@ -842,20 +1152,61 @@ const EnvDiagram = (() => {
 
   // ─── Drag behavior ─────────────────────────────────────────────
   function dragStarted(event, d) {
-    if (!event.active) simulation.alphaTarget(0.3).restart();
-    d.fx = d.x;
-    d.fy = d.y;
+    // Record starting position for delta-drag of component siblings
+    d._dragStartX = d.x;
+    d._dragStartY = d.y;
+
+    if (layoutMode === "grid") {
+      d.fx = d.x;
+      d.fy = d.y;
+    } else {
+      if (!event.active) simulation.alphaTarget(0.3).restart();
+      d.fx = d.x;
+      d.fy = d.y;
+    }
   }
 
   function dragged(event, d) {
+    const dx = event.x - d._dragStartX;
+    const dy = event.y - d._dragStartY;
     d.fx = event.x;
     d.fy = event.y;
+    d.x = event.x;
+    d.y = event.y;
+
+    // Move all siblings in the same connected component
+    if (componentsDirty) rebuildComponents();
+    const ci = componentMap.get(d.id);
+    if (ci != null) {
+      const comp = components[ci];
+      for (const nid of comp.nodeIds) {
+        if (nid === d.id) continue;
+        const n = nodeMap.get(nid);
+        if (!n) continue;
+        n.x += dx;
+        n.y += dy;
+        if (n.fx != null) { n.fx += dx; n.fy += dy; }
+      }
+    }
+    d._dragStartX = event.x;
+    d._dragStartY = event.y;
+
+    if (layoutMode === "grid") {
+      ticked();
+    }
   }
 
   function dragEnded(event, d) {
-    if (!event.active) simulation.alphaTarget(0);
-    d.fx = null;
-    d.fy = null;
+    delete d._dragStartX;
+    delete d._dragStartY;
+    if (layoutMode === "grid") {
+      d.x = d.fx;
+      d.y = d.fy;
+    } else {
+      if (!event.active) simulation.alphaTarget(0);
+      d.fx = null;
+      d.fy = null;
+    }
   }
 
   // ─── Public API (called from Scheme via FFI) ────────────────────
@@ -888,19 +1239,15 @@ const EnvDiagram = (() => {
     }
 
     bindings[id] = [];
-    nodes.push(node);
+    lastFrameNode = node;
+    pushNode(node);
 
     // Add env edge to parent
     if (parentId && nodeById(parentId)) {
-      edges.push({
-        id: edgeId(id, parentId, "env"),
-        source: id,
-        target: parentId,
-        edgeType: "env",
-      });
+      pushEdge(id, parentId, "env");
     }
 
-    render();
+    scheduleRender();
     hideEmptyState();
     return id;
   }
@@ -929,19 +1276,14 @@ const EnvDiagram = (() => {
       node.y = height * 0.3;
     }
 
-    nodes.push(node);
+    pushNode(node);
 
     // Add proc→env edge (right dot → enclosing frame)
     if (frameId && nodeById(frameId)) {
-      edges.push({
-        id: edgeId(id, frameId, "proc-env"),
-        source: id,
-        target: frameId,
-        edgeType: "proc-env",
-      });
+      pushEdge(id, frameId, "proc-env");
     }
 
-    render();
+    scheduleRender();
     return id;
   }
 
@@ -979,32 +1321,16 @@ const EnvDiagram = (() => {
 
     // Add binding→proc edge if this is a procedure binding
     if (valueType === "procedure" && procId) {
-      const eid = edgeId(frameId, procId, "binding");
-      if (!edges.find(e => e.id === eid)) {
-        edges.push({
-          id: eid,
-          source: frameId,
-          target: procId,
-          edgeType: "binding",
-        });
-      }
+      pushEdge(frameId, procId, "binding");
     }
 
     // Add binding→pair edge if this is a pair binding
     // procId field is reused to carry the root pair-node id
     if (valueType === "pair" && procId) {
-      const eid = edgeId(frameId, procId, "binding");
-      if (!edges.find(e => e.id === eid)) {
-        edges.push({
-          id: eid,
-          source: frameId,
-          target: procId,
-          edgeType: "binding",
-        });
-      }
+      pushEdge(frameId, procId, "binding");
     }
 
-    render();
+    scheduleRender();
   }
 
   function updateBinding(frameId, varName, newValue, valueType) {
@@ -1015,10 +1341,7 @@ const EnvDiagram = (() => {
       // Remove old binding→proc/pair edge if target is changing
       if (binding.procId) {
         const oldEid = edgeId(frameId, binding.procId, "binding");
-        edges = edges.filter(e => {
-          const eid = typeof e.id === "string" ? e.id : "";
-          return eid !== oldEid;
-        });
+        edges = edges.filter(e => e.id !== oldEid);
       }
 
       binding.value = newValue;
@@ -1027,87 +1350,73 @@ const EnvDiagram = (() => {
       // For procedure bindings, newValue IS the proc-id
       if (valueType === "procedure" && newValue) {
         binding.procId = newValue;
-        const eid = edgeId(frameId, newValue, "binding");
-        if (!edges.find(e => e.id === eid)) {
-          edges.push({
-            id: eid,
-            source: frameId,
-            target: newValue,
-            edgeType: "binding",
-          });
-        }
+        pushEdge(frameId, newValue, "binding");
       } else if (valueType !== "pair") {
         // Atom binding — clear procId
         binding.procId = null;
       }
     }
-    render();
+    scheduleRender();
   }
 
   // ─── Pair (cons cell) public API ─────────────────────────────────
 
   /** addPair: create a cons-cell node with optional inline labels */
-  function addPair(id, carLabel, cdrLabel) {
+  function addPair(id, carLabel, cdrLabel, treeId) {
     if (nodeById(id)) return;
 
     const node = {
       id,
       type: "pair",
+      treeId: treeId || id,
       carLabel: carLabel || "",
       cdrLabel: cdrLabel || "",
       width: PAIR_CELL_W * 2,
       height: PAIR_CELL_H,
     };
 
-    // Find a neighboring pair or frame to position near
-    // For now, place to the right of the last-added pair or frame
-    const lastPair = nodes.filter(n => n.type === "pair").pop();
-    const lastFrame = nodes.filter(n => n.type === "frame").pop();
-    const anchor = lastPair || lastFrame;
+    // Position near the most recent frame (the creating context),
+    // with small random jitter.  Link forces will fine-tune positions.
+    const anchor = lastFrameNode;
     if (anchor) {
-      node.x = (anchor.x || width / 2) + 80 + (Math.random() - 0.5) * 30;
-      node.y = (anchor.y || height / 2) + (Math.random() - 0.5) * 30;
+      node.x = (anchor.x || width / 2) + (Math.random() - 0.5) * 60;
+      node.y = (anchor.y || height / 2) + 80 + (Math.random() - 0.5) * 40;
     } else {
-      node.x = width / 2 + 100;
-      node.y = height / 2;
+      node.x = width / 2 + (Math.random() - 0.5) * 60;
+      node.y = height / 2 + (Math.random() - 0.5) * 40;
     }
 
-    nodes.push(node);
-    // Don't render yet — wait for pair edges to be added
+    lastPairNode = node;
+    pushNode(node);
     return id;
   }
 
   /** addPairEdge: connect a cons cell to its car or cdr child */
   function addPairEdge(fromId, toId, type) {
     // type is "car" or "cdr"
-    const eid = edgeId(fromId, toId, type);
-    if (edges.find(e => e.id === eid)) return;
+    pushEdge(fromId, toId, type);
 
-    edges.push({
-      id: eid,
-      source: fromId,
-      target: toId,
-      edgeType: type,  // "car" or "cdr"
-    });
-
-    // Position child near parent for good list/tree initial layout
+    // Propagate treeId to child nodes that don't have one
     const parent = nodeById(fromId);
     const child = nodeById(toId);
     if (parent && child) {
+      if (parent.treeId && !child.treeId) {
+        child.treeId = parent.treeId;
+      }
+
+      // Position child near parent for good list/tree initial layout
       const px = parent.x || width / 2;
       const py = parent.y || height / 2;
       if (type === "cdr") {
-        // cdr goes to the right (list layout)
-        child.x = px + 80;
+        child.x = px + 45;
         child.y = py;
       } else {
-        // car goes below (tree layout)
         child.x = px;
-        child.y = py + 60;
+        child.y = py + 40;
       }
     }
 
-    render();
+    scheduleRender();
   }
 
   /** addPairAtom: create a leaf atom node for pair display */
@@ -1123,10 +1432,16 @@ const EnvDiagram = (() => {
       height: 20,
     };
 
-    node.x = width / 2 + (Math.random() - 0.5) * 100;
-    node.y = height / 2 + (Math.random() - 0.5) * 100;
+    // Position near most recent pair; addPairEdge will refine
+    if (lastPairNode) {
+      node.x = (lastPairNode.x || width / 2) + (Math.random() - 0.5) * 30;
+      node.y = (lastPairNode.y || height / 2) + (Math.random() - 0.5) * 30;
+    } else {
+      node.x = width / 2 + (Math.random() - 0.5) * 60;
+      node.y = height / 2 + (Math.random() - 0.5) * 60;
+    }
 
-    nodes.push(node);
+    pushNode(node);
     return id;
   }
 
@@ -1141,41 +1456,37 @@ const EnvDiagram = (() => {
       height: 14,
     };
 
-    node.x = width / 2 + (Math.random() - 0.5) * 100;
-    node.y = height / 2 + (Math.random() - 0.5) * 100;
+    if (lastPairNode) {
+      node.x = (lastPairNode.x || width / 2) + (Math.random() - 0.5) * 30;
+      node.y = (lastPairNode.y || height / 2) + (Math.random() - 0.5) * 30;
+    } else {
+      node.x = width / 2 + (Math.random() - 0.5) * 60;
+      node.y = height / 2 + (Math.random() - 0.5) * 60;
+    }
 
-    nodes.push(node);
+    pushNode(node);
     return id;
   }
 
   function removeNode(id) {
-    // Remove from nodes
     nodes = nodes.filter(n => n.id !== id);
-
-    // Remove associated edges
-    edges = edges.filter(e => {
-      const sid = typeof e.source === "object" ? e.source.id : e.source;
-      const tid = typeof e.target === "object" ? e.target.id : e.target;
-      return sid !== id && tid !== id;
-    });
-
-    // Remove bindings
+    nodeMap.delete(id);
+    edges = edges.filter(e => e.source.id !== id && e.target.id !== id);
     delete bindings[id];
-
-    render();
+    markComponentsDirty();
+    scheduleRender();
   }
 
   function removeEdge(fromId, toId) {
-    edges = edges.filter(e => {
-      const sid = typeof e.source === "object" ? e.source.id : e.source;
-      const tid = typeof e.target === "object" ? e.target.id : e.target;
-      return !(sid === fromId && tid === toId);
-    });
-    render();
+    edges = edges.filter(e => !(e.source.id === fromId && e.target.id === toId));
+    markComponentsDirty();
+    scheduleRender();
   }
 
-  function fitToView() {
+  function fitToView(duration) {
     if (nodes.length === 0) return;
+    autoFitEnabled = true;  // re-enable auto-fit
+    const dur = duration != null ? duration : 500;
 
     // Compute bounding box
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -1194,16 +1505,20 @@ const EnvDiagram = (() => {
     const scaleX = (width - padX * 2) / bw;
     const scaleY = (height - padY * 2) / bh;
     const scale = Math.min(scaleX, scaleY, 2.0);
+    const clampedScale = Math.max(scale, 0.05);
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
 
-    svg.transition().duration(500).call(
-      zoomBehavior.transform,
-      d3.zoomIdentity
+    const t = d3.zoomIdentity
         .translate(width / 2, height / 2)
-        .scale(scale)
-        .translate(-cx, -cy)
-    );
+        .scale(clampedScale)
+        .translate(-cx, -cy);
+
+    if (dur > 0) {
+      svg.transition().duration(dur).call(zoomBehavior.transform, t);
+    } else {
+      svg.call(zoomBehavior.transform, t);
+    }
   }
 
   function resetView() {
@@ -1227,7 +1542,11 @@ const EnvDiagram = (() => {
     nodes = [];
     edges = [];
     bindings = {};
+    nodeMap.clear();
+    lastPairNode = null;
+    lastFrameNode = null;
     colorIndex = 0;
+    markComponentsDirty();
     if (autoFitTimer !== null) { clearTimeout(autoFitTimer); autoFitTimer = null; }
     if (renderTimer !== null) { clearTimeout(renderTimer); renderTimer = null; }
     edgeGroup.selectAll("*").remove();
@@ -1235,11 +1554,250 @@ const EnvDiagram = (() => {
     simulation.nodes([]);
     simulation.force("link").links([]);
     simulation.stop();
+    resetView();
   }
 
   function hideEmptyState() {
     const el = document.getElementById("empty-state");
     if (el) el.classList.add("hidden");
+  }
+
+  function stats() {
+    const counts = {};
+    const treeIds = new Set();
+    for (const n of nodes) {
+      counts[n.type] = (counts[n.type] || 0) + 1;
+      if (n.treeId) treeIds.add(n.treeId);
+    }
+    counts._total = nodes.length;
+    counts._edges = edges.length;
+    counts._pairTrees = treeIds.size;
+    // Include self-loop count
+    counts._selfLoops = edges.filter(e => e.source.id === e.target.id).length;
+    return counts;
+  }
+
+  function edgeList() {
+    return edges.map(e => ({
+      id: e.id,
+      source: e.source.id,
+      target: e.target.id,
+      type: e.edgeType,
+      selfLoop: e.source.id === e.target.id,
+    }));
+  }
+
+  function nodeList() {
+    return nodes.map(n => ({
+      id: n.id,
+      type: n.type,
+      treeId: n.treeId || null,
+      x: Math.round(n.x || 0),
+      y: Math.round(n.y || 0),
+      fx: n.fx != null ? Math.round(n.fx) : null,
+      fy: n.fy != null ? Math.round(n.fy) : null,
+      width: n.width || 0,
+      height: n.height || 0,
+    }));
+  }
+
+  // ─── Layout modes ──────────────────────────────────────────────
+
+  /**
+   * Set the layout mode. "force" uses the physics simulation.
+   * "grid" pins pair nodes on a car=down, cdr=right grid and
+   * leaves frames/procedures in the force simulation.
+   */
+  function setLayout(mode) {
+    layoutMode = mode;
+    autoFitEnabled = true;
+    if (mode === "grid") {
+      applyGridLayout();
+    } else {
+      clearPairPins();
+    }
+    render();
+  }
+
+  function getLayout() {
+    return layoutMode;
+  }
+
+  /**
+   * Walk each pair tree and assign grid positions.
+   * cdr → right, car → down.  Pin with fx/fy.
+   * Also pin frames and procedures so dragging pairs doesn't disturb them.
+   */
+  function applyGridLayout() {
+    const cellW = PAIR_CELL_W * 2 + 12;
+    const cellH = PAIR_CELL_H + 12;
+
+    // ── Position frames in a vertical column on the left ──
+    const frames = nodes.filter(n => n.type === "frame");
+    const frameX = 100;
+    const frameSpacing = Math.max(80, (frames[0] && frames[0].height || 60) + 40);
+    frames.forEach((n, i) => {
+      n.x = frameX;
+      n.y = 50 + i * frameSpacing;
+      n.fx = n.x;
+      n.fy = n.y;
+    });
+
+    // ── Position procedures to the right of their parent frame, stacked ──
+    const procs = nodes.filter(n => n.type === "procedure");
+    // Group by parent frame
+    const procsByFrame = new Map();
+    for (const p of procs) {
+      const envEdge = edges.find(e => e.source.id === p.id && e.edgeType === "env");
+      const frameId = envEdge ? envEdge.target.id : "_none";
+      if (!procsByFrame.has(frameId)) procsByFrame.set(frameId, []);
+      procsByFrame.get(frameId).push(p);
+    }
+    for (const [frameId, group] of procsByFrame) {
+      const frame = nodeById(frameId);
+      const bx = frame ? frame.x + (frame.width || FRAME_MIN_W) + 40 : frameX + 200;
+      const by = frame ? frame.y : 50;
+      group.forEach((p, i) => {
+        p.x = bx;
+        p.y = by + i * 60;
+        p.fx = p.x;
+        p.fy = p.y;
+      });
+    }
+
+    // Find tree roots: pair nodes whose treeId === their own id
+    const roots = nodes.filter(n => n.type === "pair" && n.treeId === n.id);
+    if (roots.length === 0) return;
+
+    // Build outgoing-edge index for O(1) lookup
+    const outEdges = new Map();
+    for (const e of edges) {
+      if (e.edgeType !== "car" && e.edgeType !== "cdr") continue;
+      const src = e.source.id;
+      if (!outEdges.has(src)) outEdges.set(src, []);
+      outEdges.get(src).push(e);
+    }
+
+    // Global visited set — shared nodes positioned by first tree only
+    const visited = new Set();
+
+    // First pass: measure each tree's extent (cols × rows)
+    function measureTree(nodeId, col, row, measured) {
+      if (measured.has(nodeId)) return;
+      measured.add(nodeId);
+      const children = outEdges.get(nodeId);
+      if (!children) return;
+      for (const e of children) {
+        const nc = e.edgeType === "cdr" ? col + 1 : col;
+        const nr = e.edgeType === "car" ? row + 1 : row;
+        if (nc > measured.maxCol) measured.maxCol = nc;
+        if (nr > measured.maxRow) measured.maxRow = nr;
+        measureTree(e.target.id, nc, nr, measured);
+      }
+    }
+
+    const treeSizes = [];
+    for (const root of roots) {
+      const measured = new Set();
+      measured.maxCol = 0;
+      measured.maxRow = 0;
+      measureTree(root.id, 0, 0, measured);
+      treeSizes.push({ root, cols: measured.maxCol + 1, rows: measured.maxRow + 1 });
+    }
+
+    // Lay out all trees flowing left-to-right, starting to the right of
+    // the frame/procedure column.  Use cell widths (not full node width
+    // which includes wide lambda label text) for compact spacing.
+    const maxFrameRight = Math.max(
+      ...frames.map(f => f.x + (f.width || FRAME_MIN_W)),
+      ...procs.map(p => p.x + PROC_CELL_W * 2),
+      200
+    );
+    const baseX = maxFrameRight + 60;
+    const baseY = 50;
+
+    let cursorCol = 0;
+    const GAP_X = 2;  // cells of spacing between trees
+
+    for (const ts of treeSizes) {
+      const anchorX = baseX + cursorCol * cellW;
+      const anchorY = baseY;
+
+      function layoutNode(nodeId, col, row) {
+        if (visited.has(nodeId)) return;
+        visited.add(nodeId);
+        const node = nodeById(nodeId);
+        if (!node) return;
+        node.fx = anchorX + col * cellW;
+        node.fy = anchorY + row * cellH;
+        node.x = node.fx;
+        node.y = node.fy;
+        const children = outEdges.get(nodeId);
+        if (!children) return;
+        for (const e of children) {
+          if (e.edgeType === "cdr") layoutNode(e.target.id, col + 1, row);
+          else if (e.edgeType === "car") layoutNode(e.target.id, col, row + 1);
+        }
+      }
+
+      layoutNode(ts.root.id, 0, 0);
+
+      // Advance cursor past this tree
+      cursorCol += ts.cols + GAP_X;
+    }
+  }
+
+  /** Re-apply forceConfig to the live simulation and reheat. */
+  function applyForceConfig() {
+    if (!simulation) return;
+    simulation.force("charge").strength(d => {
+      if (d.type === "frame") return forceConfig.chargeFrame;
+      return 0;
+    });
+    simulation.force("collide").strength(forceConfig.collideStrength);
+    simulation.force("link")
+      .distance(d => {
+        if (d.edgeType === "env") return forceConfig.linkDistEnv;
+        if (d.edgeType === "proc-env") return forceConfig.linkDistProcEnv;
+        if (d.edgeType === "binding") return forceConfig.linkDistBind;
+        if (d.edgeType === "car" && d.source.treeId && d.source.treeId === d.target.treeId)
+          return forceConfig.linkDistCohesion;
+        if (d.edgeType === "car") return forceConfig.linkDistCar;
+        if (d.edgeType === "cdr") return forceConfig.linkDistCdr;
+        return 120;
+      })
+      .strength(d => {
+        if (d.edgeType === "env") return 0.2;
+        if (d.edgeType === "binding") return forceConfig.linkStrBind;
+        if (d.edgeType === "proc-env") return forceConfig.linkStrProcEnv;
+        if (d.edgeType === "car" && d.source.treeId && d.source.treeId === d.target.treeId)
+          return forceConfig.linkStrCohesion;
+        if (d.edgeType === "car") return forceConfig.linkStrCar;
+        if (d.edgeType === "cdr") return forceConfig.linkStrCdr;
+        return 0.2;
+      });
+    simulation.velocityDecay(forceConfig.velocityDecay);
+    simulation.alphaDecay(forceConfig.alphaDecay);
+    simulation.alpha(0.5).restart();
+  }
+
+  function getForceConfig() {
+    return Object.assign({}, forceConfig);
+  }
+
+  function setForceParam(key, value) {
+    if (key in forceConfig) {
+      forceConfig[key] = value;
+      applyForceConfig();
+    }
+  }
+
+  /** Remove all fx/fy pins (return to force layout). */
+  function clearPairPins() {
+    for (const n of nodes) {
+      delete n.fx;
+      delete n.fy;
+    }
   }
 
   // ─── Export ─────────────────────────────────────────────────────
@@ -1260,5 +1818,13 @@ const EnvDiagram = (() => {
     getZoom,
     zoomBy,
     clear,
+    stats,
+    edgeList,
+    nodeList,
+    setLayout,
+    getLayout,
+    getForceConfig,
+    setForceParam,
+    applyForceConfig,
   };
 })();
