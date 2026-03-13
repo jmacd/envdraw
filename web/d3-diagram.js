@@ -18,6 +18,7 @@ const EnvDiagram = (() => {
   let edges = [];     // { id, source: nodeObj, target: nodeObj, edgeType, ... }
   let bindings = {};  // frameId → [ { varName, value, valueType, procId } ]
   const nodeMap = new Map();  // id → node object (kept in sync with nodes[])
+  let lastPairNode = null;   // most recently added pair node (avoids O(n) filter)
 
   // ─── D3 handles ─────────────────────────────────────────────────
   let svg, zoomLayer, edgeGroup, nodeGroup, defs;
@@ -26,6 +27,7 @@ const EnvDiagram = (() => {
   let width = 800, height = 600;
   let autoFitTimer = null;  // schedules fitToView after first mutations
   let renderTimer = null;   // debounces simulation restarts across rapid mutations
+  let layoutMode = "force"; // "force" or "grid"
 
   // ─── Configuration ──────────────────────────────────────────────
   const FRAME_MIN_W = 140;
@@ -495,6 +497,11 @@ const EnvDiagram = (() => {
   }
 
   function render() {
+    // In grid mode, recompute pair positions before rendering
+    if (layoutMode === "grid") {
+      applyGridLayout();
+    }
+
     renderEdges();
     renderNodes();
 
@@ -528,7 +535,7 @@ const EnvDiagram = (() => {
       .data(edges, d => d.id);
 
     // Enter
-    sel.enter()
+    const entering = sel.enter()
       .append("path")
       .attr("class", d => `edge ${d.edgeType}`)
       .attr("fill", "none")
@@ -545,10 +552,16 @@ const EnvDiagram = (() => {
         if (d.edgeType === "env") return "url(#arrowhead-env)";
         if (d.edgeType === "car" || d.edgeType === "cdr") return "url(#arrowhead-pair)";
         return "url(#arrowhead)";
-      })
-      .attr("opacity", 0)
-      .transition().duration(ANIM_DURATION)
-      .attr("opacity", 1);
+      });
+
+    // Skip fade-in animation for bulk creates (>20 new edges)
+    if (entering.size() > 20) {
+      entering.attr("opacity", 1);
+    } else {
+      entering.attr("opacity", 0)
+        .transition().duration(ANIM_DURATION)
+        .attr("opacity", 1);
+    }
 
     // Exit
     sel.exit()
@@ -596,9 +609,13 @@ const EnvDiagram = (() => {
       renderPairNull(d3.select(this), d);
     });
 
-    // Animate in
-    enter.transition().duration(ANIM_DURATION)
-      .attr("opacity", 1);
+    // Skip fade-in animation for bulk creates (>20 new nodes)
+    if (enter.size() > 20) {
+      enter.attr("opacity", 1);
+    } else {
+      enter.transition().duration(ANIM_DURATION)
+        .attr("opacity", 1);
+    }
 
     // Update: reposition + re-render internals
     sel.each(function (d) {
@@ -1060,29 +1077,31 @@ const EnvDiagram = (() => {
   // ─── Pair (cons cell) public API ─────────────────────────────────
 
   /** addPair: create a cons-cell node with optional inline labels */
-  function addPair(id, carLabel, cdrLabel) {
+  function addPair(id, carLabel, cdrLabel, treeId) {
     if (nodeById(id)) return;
 
     const node = {
       id,
       type: "pair",
+      treeId: treeId || id,
       carLabel: carLabel || "",
       cdrLabel: cdrLabel || "",
       width: PAIR_CELL_W * 2,
       height: PAIR_CELL_H,
     };
 
-    // Position near the most recent frame (likely the creating context),
-    // with small random jitter.  Link forces will fine-tune positions.
-    const lastFrame = nodes.filter(n => n.type === "frame").pop();
-    if (lastFrame) {
-      node.x = (lastFrame.x || width / 2) + (Math.random() - 0.5) * 60;
-      node.y = (lastFrame.y || height / 2) + 80 + (Math.random() - 0.5) * 40;
+    // Position near the most recent pair (they're being built as a tree)
+    // or fall back to center.  addPairEdge will refine positions.
+    const anchor = lastPairNode;
+    if (anchor) {
+      node.x = (anchor.x || width / 2) + (Math.random() - 0.5) * 60;
+      node.y = (anchor.y || height / 2) + (Math.random() - 0.5) * 40;
     } else {
       node.x = width / 2 + (Math.random() - 0.5) * 60;
       node.y = height / 2 + (Math.random() - 0.5) * 40;
     }
 
+    lastPairNode = node;
     pushNode(node);
     return id;
   }
@@ -1125,11 +1144,10 @@ const EnvDiagram = (() => {
       height: 20,
     };
 
-    // Position near recent pairs; addPairEdge will refine
-    const lastPair = nodes.filter(n => n.type === "pair").pop();
-    if (lastPair) {
-      node.x = (lastPair.x || width / 2) + (Math.random() - 0.5) * 30;
-      node.y = (lastPair.y || height / 2) + (Math.random() - 0.5) * 30;
+    // Position near most recent pair; addPairEdge will refine
+    if (lastPairNode) {
+      node.x = (lastPairNode.x || width / 2) + (Math.random() - 0.5) * 30;
+      node.y = (lastPairNode.y || height / 2) + (Math.random() - 0.5) * 30;
     } else {
       node.x = width / 2 + (Math.random() - 0.5) * 60;
       node.y = height / 2 + (Math.random() - 0.5) * 60;
@@ -1150,10 +1168,9 @@ const EnvDiagram = (() => {
       height: 14,
     };
 
-    const lastPair = nodes.filter(n => n.type === "pair").pop();
-    if (lastPair) {
-      node.x = (lastPair.x || width / 2) + (Math.random() - 0.5) * 30;
-      node.y = (lastPair.y || height / 2) + (Math.random() - 0.5) * 30;
+    if (lastPairNode) {
+      node.x = (lastPairNode.x || width / 2) + (Math.random() - 0.5) * 30;
+      node.y = (lastPairNode.y || height / 2) + (Math.random() - 0.5) * 30;
     } else {
       node.x = width / 2 + (Math.random() - 0.5) * 60;
       node.y = height / 2 + (Math.random() - 0.5) * 60;
@@ -1238,6 +1255,7 @@ const EnvDiagram = (() => {
     edges = [];
     bindings = {};
     nodeMap.clear();
+    lastPairNode = null;
     colorIndex = 0;
     if (autoFitTimer !== null) { clearTimeout(autoFitTimer); autoFitTimer = null; }
     if (renderTimer !== null) { clearTimeout(renderTimer); renderTimer = null; }
@@ -1255,12 +1273,99 @@ const EnvDiagram = (() => {
 
   function stats() {
     const counts = {};
+    const treeIds = new Set();
     for (const n of nodes) {
       counts[n.type] = (counts[n.type] || 0) + 1;
+      if (n.treeId) treeIds.add(n.treeId);
     }
     counts._total = nodes.length;
     counts._edges = edges.length;
+    counts._pairTrees = treeIds.size;
     return counts;
+  }
+
+  // ─── Layout modes ──────────────────────────────────────────────
+
+  /**
+   * Set the layout mode. "force" uses the physics simulation.
+   * "grid" pins pair nodes on a car=down, cdr=right grid and
+   * leaves frames/procedures in the force simulation.
+   */
+  function setLayout(mode) {
+    layoutMode = mode;
+    if (mode === "grid") {
+      applyGridLayout();
+    } else {
+      clearPairPins();
+    }
+    render();
+  }
+
+  function getLayout() {
+    return layoutMode;
+  }
+
+  /**
+   * Walk each pair tree and assign grid positions.
+   * cdr → right, car → down.  Pin with fx/fy.
+   */
+  function applyGridLayout() {
+    // Find tree roots: pair nodes whose treeId === their own id
+    const roots = nodes.filter(n => n.type === "pair" && n.treeId === n.id);
+
+    for (const root of roots) {
+      // Find the binding edge pointing to this root to anchor near its frame
+      const bindingEdge = edges.find(
+        e => e.target.id === root.id && e.edgeType === "binding"
+      );
+      const anchorX = bindingEdge
+        ? (bindingEdge.source.x || width / 2) + 160
+        : (root.x || width / 2);
+      const anchorY = bindingEdge
+        ? (bindingEdge.source.y || height / 4)
+        : (root.y || height / 4);
+
+      // BFS/DFS to assign grid positions within this tree
+      const visited = new Set();
+      const cellW = PAIR_CELL_W * 2 + 12;  // pair width + gap
+      const cellH = PAIR_CELL_H + 12;      // pair height + gap
+
+      function layoutNode(nodeId, col, row) {
+        if (visited.has(nodeId)) return;
+        visited.add(nodeId);
+
+        const node = nodeById(nodeId);
+        if (!node) return;
+
+        // Pin at grid position
+        node.fx = anchorX + col * cellW;
+        node.fy = anchorY + row * cellH;
+        node.x = node.fx;
+        node.y = node.fy;
+
+        // Find car and cdr children via edges
+        for (const e of edges) {
+          if (e.source.id !== nodeId) continue;
+          if (e.edgeType === "cdr") {
+            layoutNode(e.target.id, col + 1, row);
+          } else if (e.edgeType === "car") {
+            layoutNode(e.target.id, col, row + 1);
+          }
+        }
+      }
+
+      layoutNode(root.id, 0, 0);
+    }
+  }
+
+  /** Remove fx/fy pins from all pair nodes (return to force layout). */
+  function clearPairPins() {
+    for (const n of nodes) {
+      if (n.type === "pair" || n.type === "pair-atom" || n.type === "pair-null") {
+        delete n.fx;
+        delete n.fy;
+      }
+    }
   }
 
   // ─── Export ─────────────────────────────────────────────────────
@@ -1282,5 +1387,7 @@ const EnvDiagram = (() => {
     zoomBy,
     clear,
     stats,
+    setLayout,
+    getLayout,
   };
 })();

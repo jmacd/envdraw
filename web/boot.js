@@ -197,11 +197,11 @@ const appImports = {
     if (stepping.queueing) { stepping.currentOps.push(() => EnvDiagram.removeEdge(a, b)); return; }
     EnvDiagram.removeEdge(a, b);
   },
-  d3AddPair(id, carLabel, cdrLabel) {
+  d3AddPair(id, carLabel, cdrLabel, treeId) {
     const a = schemeToString(id), b = schemeToString(carLabel),
-          c = schemeToString(cdrLabel);
-    if (stepping.queueing) { stepping.currentOps.push(() => EnvDiagram.addPair(a, b, c)); return; }
-    EnvDiagram.addPair(a, b, c);
+          c = schemeToString(cdrLabel), t = schemeToString(treeId);
+    if (stepping.queueing) { stepping.currentOps.push(() => EnvDiagram.addPair(a, b, c, t)); return; }
+    EnvDiagram.addPair(a, b, c, t);
   },
   d3AddPairEdge(fromId, toId, edgeType) {
     const a = schemeToString(fromId), b = schemeToString(toId),
@@ -755,6 +755,12 @@ function wireEvents() {
     replInput.value = ex.code;
     submitInput();
     replInput.focus();
+  });
+
+  // ── Layout mode selector ──
+  const selLayout = document.getElementById("sel-layout");
+  selLayout.addEventListener("change", () => {
+    EnvDiagram.setLayout(selLayout.value);
   });
 
   // ── Keyboard shortcuts ──

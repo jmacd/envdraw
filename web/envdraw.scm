@@ -196,7 +196,7 @@
   (ref string) (ref string) (ref string) (ref string) -> none)
 
 (define-foreign d3-add-pair "app" "d3AddPair"
-  (ref string) (ref string) (ref string) -> none)
+  (ref string) (ref string) (ref string) (ref string) -> none)
 
 (define-foreign d3-add-pair-edge "app" "d3AddPairEdge"
   (ref string) (ref string) (ref string) -> none)

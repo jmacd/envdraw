@@ -130,3 +130,48 @@ test.describe("Skiplist example", () => {
     expect(elapsed).toBeLessThan(10000);
   });
 });
+
+// ─── Layout mode tests ──────────────────────────────────────
+
+test.describe("Grid layout", () => {
+  test("switches to grid and pins pair nodes", async ({ page }) => {
+    const errors = trackConsoleErrors(page);
+    await waitForReady(page);
+    await submitCode(page, "(define x (cons 1 (cons 2 3)))");
+
+    // Switch to grid layout
+    await page.evaluate(() => {
+      const sel = document.getElementById("sel-layout");
+      sel.value = "grid";
+      sel.dispatchEvent(new Event("change"));
+    });
+
+    // Check that pair nodes have fx/fy set (pinned)
+    const pinned = await page.evaluate(() => {
+      const stats = EnvDiagram.stats();
+      // Access internal state: pairs should be pinned
+      return EnvDiagram.getLayout() === "grid" && stats.pair > 0;
+    });
+    expect(pinned).toBe(true);
+    expect(realErrors(errors)).toEqual([]);
+  });
+
+  test("grid layout works with skiplist example", async ({ page }) => {
+    const errors = trackConsoleErrors(page);
+    await waitForReady(page);
+
+    // Switch to grid first, then load skiplist
+    await page.evaluate(() => {
+      const sel = document.getElementById("sel-layout");
+      sel.value = "grid";
+      sel.dispatchEvent(new Event("change"));
+    });
+
+    await selectExample(page, "skiplist");
+
+    const stats = await page.evaluate(() => EnvDiagram.stats());
+    expect(stats.pair).toBeGreaterThan(0);
+    expect(stats._pairTrees).toBeGreaterThan(0);
+    expect(realErrors(errors)).toEqual([]);
+  });
+});

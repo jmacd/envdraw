@@ -56,6 +56,11 @@
 ;;; cleanup during rebuild.
 (define *current-tree-node-ids* '())
 
+;;; Root pair-node id for the tree currently being built.
+;;; Set by the first pair created in build-pair-node; passed to every
+;;; d3-add-pair call so D3 can group nodes by tree.
+(define *current-tree-root-id* #f)
+
 ;;; Current color (cycles through palette)
 (define *color-index* 0)
 (define *color-palette*
@@ -136,6 +141,7 @@
    Returns the root pair-node id string."
   (set! *pair-seen* '())
   (set! *current-tree-node-ids* '())
+  (set! *current-tree-root-id* #f)
   (build-pair-node obj))
 
 (define (build-pair-node obj)
@@ -153,6 +159,9 @@
       (pair-seen-add! obj pair-id)
       (set! *pair-ids* (cons pair-id *pair-ids*))
       (set! *current-tree-node-ids* (cons pair-id *current-tree-node-ids*))
+       ;; First pair created becomes the tree root
+       (when (not *current-tree-root-id*)
+         (set! *current-tree-root-id* pair-id))
       ;; Compute short labels for inline display of atomic car/cdr.
       ;; Null is represented as "/" which the D3 side renders as a
       ;; diagonal slash inside the cell half (classic SICP style).
@@ -166,8 +175,8 @@
                               ((viewable-pair? cdr-val) "")
                               ((compound-procedure? cdr-val) "")
                               (else (viewed-rep cdr-val)))))
-        ;; Create the cons-cell node in D3
-        (d3-add-pair pair-id car-label cdr-label)
+        ;; Create the cons-cell node in D3 with tree-root id
+        (d3-add-pair pair-id car-label cdr-label *current-tree-root-id*)
         ;; Process car child — create edges for non-inline children
         (cond
          ((null? car-val)
