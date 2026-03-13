@@ -38,6 +38,7 @@
           <option value="force">Force</option>
           <option value="grid">Grid</option>
         </select>
+        <button id="btn-randomize" class="tb-btn tb-btn-subtle" title="Randomize forces">Randomize</button>
       </div>
       <div class="toolbar-right">
         <span id="status-indicator" class="status-ready">Ready</span>
@@ -57,6 +58,40 @@
           <button id="btn-zoom-reset" class="zoom-btn zoom-label" title="Reset zoom (0)">100%</button>
           <button id="btn-zoom-out" class="zoom-btn" title="Zoom out (−)">−</button>
           <button id="btn-fit" class="zoom-btn" title="Fit diagram to view (F)">⊞</button>
+          <button id="btn-forces" class="zoom-btn" title="Force controls (⚙)">⚙</button>
+        </div>
+        <!-- Force control panel -->
+        <div id="force-panel" class="force-panel hidden">
+          <div class="fp-header">
+            <span>Force Controls</span>
+            <button id="btn-close-forces" class="fp-close" title="Close">✕</button>
+          </div>
+          <div class="fp-section">Charge (repulsion)</div>
+          <label class="fp-row">Frame <input type="range" min="-500" max="0" step="5" data-key="chargeFrame"><span class="fp-val"></span></label>
+          <label class="fp-row">Proc <input type="range" min="-300" max="0" step="5" data-key="chargeProc"><span class="fp-val"></span></label>
+          <label class="fp-row">Pair <input type="range" min="-100" max="0" step="1" data-key="chargePair"><span class="fp-val"></span></label>
+          <div class="fp-section">Link distance</div>
+          <label class="fp-row">Env <input type="range" min="20" max="400" step="5" data-key="linkDistEnv"><span class="fp-val"></span></label>
+          <label class="fp-row">Binding <input type="range" min="20" max="300" step="5" data-key="linkDistBind"><span class="fp-val"></span></label>
+          <label class="fp-row">Proc-Env <input type="range" min="20" max="300" step="5" data-key="linkDistProcEnv"><span class="fp-val"></span></label>
+          <label class="fp-row">Car <input type="range" min="5" max="150" step="5" data-key="linkDistCar"><span class="fp-val"></span></label>
+          <label class="fp-row">Cdr <input type="range" min="5" max="150" step="5" data-key="linkDistCdr"><span class="fp-val"></span></label>
+          <label class="fp-row">Cohesion <input type="range" min="1" max="80" step="1" data-key="linkDistCohesion"><span class="fp-val"></span></label>
+          <div class="fp-section">Link strength</div>
+          <label class="fp-row">Binding <input type="range" min="0" max="2" step="0.05" data-key="linkStrBind"><span class="fp-val"></span></label>
+          <label class="fp-row">Proc-Env <input type="range" min="0" max="2" step="0.05" data-key="linkStrProcEnv"><span class="fp-val"></span></label>
+          <label class="fp-row">Car <input type="range" min="0" max="2" step="0.05" data-key="linkStrCar"><span class="fp-val"></span></label>
+          <label class="fp-row">Cdr <input type="range" min="0" max="2" step="0.05" data-key="linkStrCdr"><span class="fp-val"></span></label>
+          <label class="fp-row">Cohesion <input type="range" min="0" max="3" step="0.1" data-key="linkStrCohesion"><span class="fp-val"></span></label>
+          <div class="fp-section">Simulation</div>
+          <label class="fp-row">Friction <input type="range" min="0.1" max="1" step="0.05" data-key="velocityDecay"><span class="fp-val"></span></label>
+          <label class="fp-row">Cooling <input type="range" min="0.001" max="0.2" step="0.005" data-key="alphaDecay"><span class="fp-val"></span></label>
+          <label class="fp-row">Collide <input type="range" min="0" max="1.5" step="0.05" data-key="collideStrength"><span class="fp-val"></span></label>
+          <div class="fp-actions">
+            <button id="btn-reheat" class="fp-btn">Reheat</button>
+            <button id="btn-randomize-forces" class="fp-btn">Randomize</button>
+            <button id="btn-reset-forces" class="fp-btn">Reset</button>
+          </div>
         </div>
         <!-- Empty state -->
         <div id="empty-state">
@@ -81,13 +116,19 @@
 
     <!-- REPL -->
     <div id="repl-area">
-      <div id="repl-log"></div>
-      <div id="repl-input-row">
-        <div id="input-line-nums"><span>1</span></div>
-        <span class="prompt">&gt;</span>
-        <textarea id="repl-input" rows="5" autofocus
-                  placeholder="Type a Scheme expression… (Shift+Enter for newline)"
-                  spellcheck="false" autocomplete="off"></textarea>
+      <div id="repl-handle" title="Toggle REPL (R)">
+        <span class="repl-handle-icon">▼</span>
+        <span class="repl-handle-label">REPL</span>
+      </div>
+      <div id="repl-body">
+        <div id="repl-log"></div>
+        <div id="repl-input-row">
+          <div id="input-line-nums"><span>1</span></div>
+          <span class="prompt">&gt;</span>
+          <textarea id="repl-input" rows="5" autofocus
+                    placeholder="Type a Scheme expression… (Shift+Enter for newline)"
+                    spellcheck="false" autocomplete="off"></textarea>
+        </div>
       </div>
     </div>
 
@@ -98,7 +139,7 @@
   <script>
     // Cache-bust boot.js — bump version when boot.js changes
     const s = document.createElement("script");
-    s.src = "boot.js?v=15";
+    s.src = "boot.js?v=16";
     document.body.appendChild(s);
   </script>
 </body>

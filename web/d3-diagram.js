@@ -33,6 +33,27 @@ const EnvDiagram = (() => {
   // ─── Configuration ──────────────────────────────────────────────
   const FRAME_MIN_W = 140;
   const FRAME_HEADER_H = 24;
+
+  // Tunable force parameters — exposed via control panel
+  const forceConfig = {
+    chargeFrame:    -150,
+    chargeProc:     0,
+    chargePair:     -5,
+    linkDistEnv:    160,
+    linkDistBind:   90,
+    linkDistProcEnv: 60,
+    linkDistCar:    40,
+    linkDistCdr:    45,
+    linkDistCohesion: 15,
+    linkStrBind:    0.7,
+    linkStrProcEnv: 0.8,
+    linkStrCar:     0.8,
+    linkStrCdr:     0.8,
+    linkStrCohesion: 1.5,
+    velocityDecay:  0.7,
+    alphaDecay:     0.05,
+    collideStrength: 0.8,
+  };
   const BINDING_H = 18;
   const BINDING_PAD = 8;
   const PROC_CELL_W = 30;
@@ -165,21 +186,22 @@ const EnvDiagram = (() => {
     edgeGroup = zoomLayer.append("g").attr("class", "edges")
       .attr("pointer-events", "none");
 
-    // D3-zoom
+    // D3-zoom — disable auto-fit when user manually zooms/pans
     zoomBehavior = d3.zoom()
-      .scaleExtent([0.1, 5])
+      .scaleExtent([0.05, 5])
       .on("zoom", (event) => {
         zoomLayer.attr("transform", event.transform);
+        // If zoom was initiated by user gesture (not programmatic), disable auto-fit
+        if (event.sourceEvent) autoFitEnabled = false;
       });
     svg.call(zoomBehavior);
 
     // Initialize force simulation
     simulation = d3.forceSimulation(nodes)
       .force("charge", d3.forceManyBody().strength(d => {
-        // Pair nodes are tiny (30px) and numerous — minimal repulsion.
-        if (d.type === "pair" || d.type === "pair-atom" || d.type === "pair-null") return -5;
-        if (d.type === "procedure") return -60;
-        return -150;  // frames
+        if (d.type === "pair" || d.type === "pair-atom" || d.type === "pair-null") return forceConfig.chargePair;
+        if (d.type === "procedure") return forceConfig.chargeProc;
+        return forceConfig.chargeFrame;
       }))
       .force("collide", d3.forceCollide().radius(d => {
         if (d.type === "frame")
@@ -189,29 +211,27 @@ const EnvDiagram = (() => {
         if (d.type === "pair")
           return Math.max(d.width || 60, d.height || 48) * 0.5 + 2;
         return Math.max(d.width || 60, d.height || 48) * 0.5 + 10;
-      }).strength(0.8).iterations(2))
+      }).strength(forceConfig.collideStrength).iterations(2))
       .force("link", d3.forceLink(edges)
         .id(d => d.id)
         .distance(d => {
-          if (d.edgeType === "env") return 160;
-          if (d.edgeType === "proc-env") return 80;
-          if (d.edgeType === "binding") return 90;
-          // Intra-tree car: tight bond between cons cells of the same allocation
+          if (d.edgeType === "env") return forceConfig.linkDistEnv;
+          if (d.edgeType === "proc-env") return forceConfig.linkDistProcEnv;
+          if (d.edgeType === "binding") return forceConfig.linkDistBind;
           if (d.edgeType === "car" && d.source.treeId && d.source.treeId === d.target.treeId)
-            return 15;
-          if (d.edgeType === "car") return 40;
-          if (d.edgeType === "cdr") return 45;
+            return forceConfig.linkDistCohesion;
+          if (d.edgeType === "car") return forceConfig.linkDistCar;
+          if (d.edgeType === "cdr") return forceConfig.linkDistCdr;
           return 120;
         })
         .strength(d => {
           if (d.edgeType === "env") return 0.2;
-          if (d.edgeType === "binding") return 0.5;
-          if (d.edgeType === "proc-env") return 0.5;
-          // Intra-tree car: very strong cohesion
+          if (d.edgeType === "binding") return forceConfig.linkStrBind;
+          if (d.edgeType === "proc-env") return forceConfig.linkStrProcEnv;
           if (d.edgeType === "car" && d.source.treeId && d.source.treeId === d.target.treeId)
-            return 1.5;
-          if (d.edgeType === "car") return 0.8;
-          if (d.edgeType === "cdr") return 0.8;
+            return forceConfig.linkStrCohesion;
+          if (d.edgeType === "car") return forceConfig.linkStrCar;
+          if (d.edgeType === "cdr") return forceConfig.linkStrCdr;
           return 0.2;
         })
       )
@@ -240,19 +260,20 @@ const EnvDiagram = (() => {
         return 0.3;
       }))
       .force("x", d3.forceX().x(d => {
-        // Spread procedures to the right of their frame
+        // Procedures: pull toward their parent frame's X position
         if (d.type === "procedure" && d.frameId) {
           const fn = nodeById(d.frameId);
-          if (fn) return (fn.x || width / 2) + 180;
+          if (fn) return (fn.x || width / 2) + 120;
         }
         return width / 2;
       }).strength(d => {
-        if (d.type === "procedure") return 0.12;
+        if (d.type === "procedure") return 0.6;
         if (d.type === "pair" || d.type === "pair-atom" || d.type === "pair-null") return 0.06;
         return 0.08;
       }))
-      .velocityDecay(0.7)
-      .alphaDecay(0.05)
+      .force("y", d3.forceY().y(d => {
+      .velocityDecay(forceConfig.velocityDecay)
+      .alphaDecay(forceConfig.alphaDecay)
       .on("tick", ticked)
       .stop();  // Don't auto-start; scheduleRender() handles restarts
 
@@ -275,17 +296,62 @@ const EnvDiagram = (() => {
   }
 
   // ─── Force tick → update SVG positions ──────────────────────────
-  function ticked() {
-    // Update edge paths
-    edgeGroup.selectAll(".edge")
-      .attr("d", d => computeEdgePath(d));
+  let autoFitEnabled = true;  // auto-zoom to fit diagram
 
-    // Update node positions
-    nodeGroup.selectAll(".node")
-      .attr("transform", d => `translate(${d.x - (d.width || 0) / 2},${d.y - (d.height || 0) / 2})`);
+  // Cached selections for ticked() — updated in renderEdges/renderNodes
+  let edgeSel = null;
+  let nodeSel = null;
+
+  function ticked() {
+    // Containment: clamp node positions to viewport bounds (in graph coords)
+    const t = d3.zoomTransform(svg.node());
+    const pad = 20;
+    const visMinX = (-t.x + pad) / t.k;
+    const visMaxX = (-t.x + width - pad) / t.k;
+    const visMinY = (-t.y + pad) / t.k;
+    const visMaxY = (-t.y + height - pad) / t.k;
+
+    for (const n of nodes) {
+      if (n.fx != null) continue;
+      const hw = (n.width || 60) / 2;
+      const hh = (n.height || 60) / 2;
+      if (n.x < visMinX + hw) n.x = visMinX + hw;
+      else if (n.x > visMaxX - hw) n.x = visMaxX - hw;
+      if (n.y < visMinY + hh) n.y = visMinY + hh;
+      else if (n.y > visMaxY - hh) n.y = visMaxY - hh;
+    }
+
+    // Update SVG using cached selections
+    if (edgeSel) edgeSel.attr("d", computeEdgePath);
+    if (nodeSel) nodeSel.attr("transform", d => `translate(${d.x - (d.width || 0) / 2},${d.y - (d.height || 0) / 2})`);
+
+    // Auto-fit: when simulation is cooling down, keep diagram fitted
+    if (autoFitEnabled && nodes.length > 0 && simulation.alpha() < 0.15) {
+      scheduleFit();
+    }
+  }
+
+  // Debounced fit — avoid calling fitToView on every tick
+  let fitTimer = null;
+  function scheduleFit() {
+    if (fitTimer !== null) return;
+    fitTimer = setTimeout(() => {
+      fitTimer = null;
+      fitToView(200);  // fast transition for auto-fit
+    }, 100);
   }
 
   // ─── Edge path computation ──────────────────────────────────────
+
+  // Procedure cons-cell center helpers (hoisted for perf — avoid
+  // recreating closures on every computeEdgePath call)
+  function procCellCX(node) {
+    return node.x - (node.width || PROC_CELL_W * 2) / 2 + PROC_CELL_W;
+  }
+  function procCellCY(node) {
+    return node.y - (node.height || (PROC_CELL_H + PROC_LABEL_H)) / 2 + PROC_CELL_H / 2;
+  }
+
   function computeEdgePath(d) {
     // source/target are always node objects (set by pushEdge)
     const s = d.source;
@@ -312,24 +378,6 @@ const EnvDiagram = (() => {
     const sh = s.height || 60;
     const tw = t.width || FRAME_MIN_W;
     const th = t.height || 60;
-
-    // Procedure dots are in the cons-cell rect, which sits at the top-left
-    // of the node bounding box.  The node center (d.x, d.y) is the center
-    // of the full bounding box (which includes the possibly-wider lambda
-    // label text below the cell).  These helpers compute the cons-cell
-    // center in world coords so arrows terminate at the actual cell.
-    function procCellCX(node) {
-      // Cons cell starts at local x=0, is PROC_CELL_W*2 wide.
-      // Node is translated to (node.x - node.width/2, ...).
-      // So cell center X = node.x - node.width/2 + PROC_CELL_W.
-      return node.x - (node.width || PROC_CELL_W * 2) / 2 + PROC_CELL_W;
-    }
-    function procCellCY(node) {
-      // Cons cell starts at local y=0, is PROC_CELL_H tall.
-      // Node is translated to (..., node.y - node.height/2).
-      // So cell center Y = node.y - node.height/2 + PROC_CELL_H/2.
-      return node.y - (node.height || (PROC_CELL_H + PROC_LABEL_H)) / 2 + PROC_CELL_H / 2;
-    }
 
     if (d.edgeType === "binding") {
       // From binding dot in source frame → target procedure or pair.
@@ -541,18 +589,18 @@ const EnvDiagram = (() => {
         simulation.nodes(nodes);
         simulation.force("link").links(edges);
         ticked();
+        if (autoFitEnabled) fitToView(200);
         return;
       }
 
       simulation.stop();
-      // Scale repulsion for large diagrams — pairs always low.
+      // Scale repulsion for large diagrams based on forceConfig values.
       const n = nodes.length;
-      const frameCharge = n > 100 ? -40 : n > 50 ? -80 : -150;
-      const procCharge  = n > 100 ? -15 : n > 50 ? -30 : -60;
+      const scale = n > 100 ? 0.27 : n > 50 ? 0.53 : 1.0;
       simulation.force("charge").strength(d => {
-        if (d.type === "pair" || d.type === "pair-atom" || d.type === "pair-null") return -5;
-        if (d.type === "procedure") return procCharge;
-        return frameCharge;
+        if (d.type === "pair" || d.type === "pair-atom" || d.type === "pair-null") return forceConfig.chargePair;
+        if (d.type === "procedure") return forceConfig.chargeProc * scale;
+        return forceConfig.chargeFrame * scale;
       });
       // Edges already hold node object references (set by pushEdge),
       // so D3's forceLink won't need to resolve string IDs.
@@ -595,11 +643,14 @@ const EnvDiagram = (() => {
         .attr("opacity", 1);
     }
 
-    // Exit
+    // Exit edges
     sel.exit()
       .transition().duration(ANIM_DURATION)
       .attr("opacity", 0)
       .remove();
+
+    // Cache merged selection for ticked()
+    edgeSel = edgeGroup.selectAll(".edge");
   }
 
   function renderNodes() {
@@ -660,6 +711,9 @@ const EnvDiagram = (() => {
       .transition().duration(ANIM_DURATION)
       .attr("opacity", 0)
       .remove();
+
+    // Cache merged selection for ticked()
+    nodeSel = nodeGroup.selectAll(".node");
   }
 
   // ─── Frame SVG ──────────────────────────────────────────────────
@@ -1252,8 +1306,10 @@ const EnvDiagram = (() => {
     scheduleRender();
   }
 
-  function fitToView() {
+  function fitToView(duration) {
     if (nodes.length === 0) return;
+    autoFitEnabled = true;  // re-enable auto-fit
+    const dur = duration != null ? duration : 500;
 
     // Compute bounding box
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -1272,12 +1328,11 @@ const EnvDiagram = (() => {
     const scaleX = (width - padX * 2) / bw;
     const scaleY = (height - padY * 2) / bh;
     const scale = Math.min(scaleX, scaleY, 2.0);
-    // Don't zoom out below 0.15 — better to show a portion than everything tiny
-    const clampedScale = Math.max(scale, 0.15);
+    const clampedScale = Math.max(scale, 0.05);
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
 
-    svg.transition().duration(500).call(
+    svg.transition().duration(dur).call(
       zoomBehavior.transform,
       d3.zoomIdentity
         .translate(width / 2, height / 2)
@@ -1373,6 +1428,7 @@ const EnvDiagram = (() => {
    */
   function setLayout(mode) {
     layoutMode = mode;
+    autoFitEnabled = true;
     if (mode === "grid") {
       applyGridLayout();
     } else {
@@ -1509,6 +1565,52 @@ const EnvDiagram = (() => {
     }
   }
 
+  /** Re-apply forceConfig to the live simulation and reheat. */
+  function applyForceConfig() {
+    if (!simulation) return;
+    simulation.force("charge").strength(d => {
+      if (d.type === "pair" || d.type === "pair-atom" || d.type === "pair-null") return forceConfig.chargePair;
+      if (d.type === "procedure") return forceConfig.chargeProc;
+      return forceConfig.chargeFrame;
+    });
+    simulation.force("collide").strength(forceConfig.collideStrength);
+    simulation.force("link")
+      .distance(d => {
+        if (d.edgeType === "env") return forceConfig.linkDistEnv;
+        if (d.edgeType === "proc-env") return forceConfig.linkDistProcEnv;
+        if (d.edgeType === "binding") return forceConfig.linkDistBind;
+        if (d.edgeType === "car" && d.source.treeId && d.source.treeId === d.target.treeId)
+          return forceConfig.linkDistCohesion;
+        if (d.edgeType === "car") return forceConfig.linkDistCar;
+        if (d.edgeType === "cdr") return forceConfig.linkDistCdr;
+        return 120;
+      })
+      .strength(d => {
+        if (d.edgeType === "env") return 0.2;
+        if (d.edgeType === "binding") return forceConfig.linkStrBind;
+        if (d.edgeType === "proc-env") return forceConfig.linkStrProcEnv;
+        if (d.edgeType === "car" && d.source.treeId && d.source.treeId === d.target.treeId)
+          return forceConfig.linkStrCohesion;
+        if (d.edgeType === "car") return forceConfig.linkStrCar;
+        if (d.edgeType === "cdr") return forceConfig.linkStrCdr;
+        return 0.2;
+      });
+    simulation.velocityDecay(forceConfig.velocityDecay);
+    simulation.alphaDecay(forceConfig.alphaDecay);
+    simulation.alpha(0.5).restart();
+  }
+
+  function getForceConfig() {
+    return Object.assign({}, forceConfig);
+  }
+
+  function setForceParam(key, value) {
+    if (key in forceConfig) {
+      forceConfig[key] = value;
+      applyForceConfig();
+    }
+  }
+
   /** Remove all fx/fy pins (return to force layout). */
   function clearPairPins() {
     for (const n of nodes) {
@@ -1540,5 +1642,8 @@ const EnvDiagram = (() => {
     nodeList,
     setLayout,
     getLayout,
+    getForceConfig,
+    setForceParam,
+    applyForceConfig,
   };
 })();

@@ -384,6 +384,8 @@ function setupResizeHandle() {
 
 function wireEvents() {
   const replInput = document.getElementById("repl-input");
+  const replArea = document.getElementById("repl-area");
+  const replHandle = document.getElementById("repl-handle");
   const btnStep = document.getElementById("btn-step");
   const btnContinue = document.getElementById("btn-continue");
   const chkStepping = document.getElementById("chk-stepping");
@@ -769,6 +771,103 @@ function wireEvents() {
   // Reset dropdown to match actual layout state (browser may restore stale value)
   selLayout.value = EnvDiagram.getLayout();
 
+  // ── Toolbar randomize button ──
+  const btnRandomizeTop = document.getElementById("btn-randomize");
+  function randomizeForces() {
+    const panel = document.getElementById("force-panel");
+    panel.querySelectorAll("input[data-key]").forEach(input => {
+      const min = parseFloat(input.min);
+      const max = parseFloat(input.max);
+      const step = parseFloat(input.step) || 1;
+      const range = max - min;
+      const val = min + Math.round((Math.random() * range) / step) * step;
+      const rounded = parseFloat(val.toFixed(4));
+      input.value = rounded;
+      input.nextElementSibling.textContent = rounded;
+      EnvDiagram.setForceParam(input.dataset.key, rounded);
+    });
+  }
+  btnRandomizeTop.addEventListener("click", randomizeForces);
+
+  // ── Force control panel ──
+  const forcePanel = document.getElementById("force-panel");
+  const btnForces = document.getElementById("btn-forces");
+  const btnCloseForces = document.getElementById("btn-close-forces");
+  const btnReheat = document.getElementById("btn-reheat");
+  const btnResetForces = document.getElementById("btn-reset-forces");
+
+  // Populate slider values from current config
+  function syncForceSliders() {
+    const cfg = EnvDiagram.getForceConfig();
+    forcePanel.querySelectorAll("input[data-key]").forEach(input => {
+      const key = input.dataset.key;
+      if (key in cfg) {
+        input.value = cfg[key];
+        input.nextElementSibling.textContent = cfg[key];
+      }
+    });
+  }
+
+  // Save defaults for reset
+  const defaultForceConfig = EnvDiagram.getForceConfig();
+
+  btnForces.addEventListener("click", () => {
+    forcePanel.classList.toggle("hidden");
+    if (!forcePanel.classList.contains("hidden")) {
+      syncForceSliders();
+      replArea.classList.add("collapsed");
+    }
+  });
+  btnCloseForces.addEventListener("click", () => {
+    forcePanel.classList.add("hidden");
+  });
+
+  // Wire slider input events
+  forcePanel.querySelectorAll("input[data-key]").forEach(input => {
+    input.addEventListener("input", () => {
+      const val = parseFloat(input.value);
+      input.nextElementSibling.textContent = val;
+      EnvDiagram.setForceParam(input.dataset.key, val);
+    });
+  });
+
+  btnReheat.addEventListener("click", () => {
+    EnvDiagram.applyForceConfig();
+  });
+
+  const btnRandomize = document.getElementById("btn-randomize-forces");
+  btnRandomize.addEventListener("click", () => {
+    randomizeForces();
+  });
+
+  btnResetForces.addEventListener("click", () => {
+    Object.keys(defaultForceConfig).forEach(k => {
+      EnvDiagram.setForceParam(k, defaultForceConfig[k]);
+    });
+    syncForceSliders();
+  });
+
+  // ── Collapsible REPL ──
+  replHandle.addEventListener("click", () => {
+    replArea.classList.toggle("collapsed");
+    if (!replArea.classList.contains("collapsed")) {
+      replInput.focus();
+    }
+  });
+
+  // Collapse when interacting with the diagram
+  const canvasContainer = document.getElementById("canvas-container");
+  canvasContainer.addEventListener("pointerdown", (e) => {
+    // Don't collapse if clicking zoom/force controls
+    if (e.target.closest('#zoom-controls') || e.target.closest('#force-panel')) return;
+    replArea.classList.add("collapsed");
+  });
+
+  // Expand when focusing the REPL input
+  replInput.addEventListener("focus", () => {
+    replArea.classList.remove("collapsed");
+  });
+
   // ── Keyboard shortcuts ──
   document.addEventListener("keydown", (e) => {
     // Don't capture when typing in the REPL
@@ -801,7 +900,11 @@ function wireEvents() {
       setTimeout(updateZoomLabel, 510);
     } else if (e.key === "/" && document.activeElement !== replInput) {
       e.preventDefault();
+      replArea.classList.remove("collapsed");
       replInput.focus();
+    } else if (e.key === "r" && !e.ctrlKey && !e.metaKey && document.activeElement !== replInput) {
+      e.preventDefault();
+      replHandle.click();
     }
   });
 
