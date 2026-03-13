@@ -194,8 +194,8 @@ const EnvDiagram = (() => {
         .id(d => d.id)
         .distance(d => {
           if (d.edgeType === "env") return 160;
-          if (d.edgeType === "proc-env") return 120;
-          if (d.edgeType === "binding") return 130;
+          if (d.edgeType === "proc-env") return 80;
+          if (d.edgeType === "binding") return 90;
           // Intra-tree car: tight bond between cons cells of the same allocation
           if (d.edgeType === "car" && d.source.treeId && d.source.treeId === d.target.treeId)
             return 15;
@@ -205,8 +205,8 @@ const EnvDiagram = (() => {
         })
         .strength(d => {
           if (d.edgeType === "env") return 0.2;
-          if (d.edgeType === "binding") return 0.15;
-          if (d.edgeType === "proc-env") return 0.15;
+          if (d.edgeType === "binding") return 0.5;
+          if (d.edgeType === "proc-env") return 0.5;
           // Intra-tree car: very strong cohesion
           if (d.edgeType === "car" && d.source.treeId && d.source.treeId === d.target.treeId)
             return 1.5;
@@ -1359,6 +1359,8 @@ const EnvDiagram = (() => {
       y: Math.round(n.y || 0),
       fx: n.fx != null ? Math.round(n.fx) : null,
       fy: n.fy != null ? Math.round(n.fy) : null,
+      width: n.width || 0,
+      height: n.height || 0,
     }));
   }
 
@@ -1389,39 +1391,40 @@ const EnvDiagram = (() => {
    * Also pin frames and procedures so dragging pairs doesn't disturb them.
    */
   function applyGridLayout() {
-    // Pin all frames and procedures at their current positions.
-    // If they don't have positions yet, place frames in a column to the left
-    // and procedures just below their parent frame.
+    const cellW = PAIR_CELL_W * 2 + 12;
+    const cellH = PAIR_CELL_H + 12;
+
+    // ── Position frames in a vertical column on the left ──
+    const frames = nodes.filter(n => n.type === "frame");
     const frameX = 100;
-    let frameY = 50;
-    const frameSpacing = 120;
-    for (const n of nodes) {
-      if (n.type === "frame") {
-        if (!n.x || !n.y) {
-          n.x = frameX;
-          n.y = frameY;
-          frameY += frameSpacing;
-        }
-        n.fx = n.x;
-        n.fy = n.y;
-      }
+    const frameSpacing = Math.max(80, (frames[0] && frames[0].height || 60) + 40);
+    frames.forEach((n, i) => {
+      n.x = frameX;
+      n.y = 50 + i * frameSpacing;
+      n.fx = n.x;
+      n.fy = n.y;
+    });
+
+    // ── Position procedures to the right of their parent frame, stacked ──
+    const procs = nodes.filter(n => n.type === "procedure");
+    // Group by parent frame
+    const procsByFrame = new Map();
+    for (const p of procs) {
+      const envEdge = edges.find(e => e.source.id === p.id && e.edgeType === "env");
+      const frameId = envEdge ? envEdge.target.id : "_none";
+      if (!procsByFrame.has(frameId)) procsByFrame.set(frameId, []);
+      procsByFrame.get(frameId).push(p);
     }
-    for (const n of nodes) {
-      if (n.type === "procedure") {
-        if (!n.x || !n.y) {
-          // Place near parent frame via env edge
-          const envEdge = edges.find(e => e.source.id === n.id && e.edgeType === "env");
-          if (envEdge) {
-            n.x = (envEdge.target.x || frameX) + 200;
-            n.y = (envEdge.target.y || 50);
-          } else {
-            n.x = frameX + 200;
-            n.y = 50;
-          }
-        }
-        n.fx = n.x;
-        n.fy = n.y;
-      }
+    for (const [frameId, group] of procsByFrame) {
+      const frame = nodeById(frameId);
+      const bx = frame ? frame.x + (frame.width || FRAME_MIN_W) + 40 : frameX + 200;
+      const by = frame ? frame.y : 50;
+      group.forEach((p, i) => {
+        p.x = bx;
+        p.y = by + i * 60;
+        p.fx = p.x;
+        p.fy = p.y;
+      });
     }
 
     // Find tree roots: pair nodes whose treeId === their own id
@@ -1439,9 +1442,6 @@ const EnvDiagram = (() => {
 
     // Global visited set — shared nodes positioned by first tree only
     const visited = new Set();
-
-    const cellW = PAIR_CELL_W * 2 + 12;
-    const cellH = PAIR_CELL_H + 12;
 
     // First pass: measure each tree's extent (cols × rows)
     function measureTree(nodeId, col, row, measured) {
@@ -1467,15 +1467,16 @@ const EnvDiagram = (() => {
       treeSizes.push({ root, cols: measured.maxCol + 1, rows: measured.maxRow + 1 });
     }
 
-    // Lay out all trees flowing left-to-right from a single origin
-    // Use global frame's position as the baseline
-    const globalFrame = nodes.find(n => n.type === "frame" && n.name === "global");
-    const baseX = globalFrame
-      ? Math.round((globalFrame.x || width / 2) / cellW) * cellW + 160
-      : width / 2;
-    const baseY = globalFrame
-      ? Math.round((globalFrame.y || height / 4) / cellH) * cellH
-      : height / 4;
+    // Lay out all trees flowing left-to-right, starting to the right of
+    // the frame/procedure column.  Use cell widths (not full node width
+    // which includes wide lambda label text) for compact spacing.
+    const maxFrameRight = Math.max(
+      ...frames.map(f => f.x + (f.width || FRAME_MIN_W)),
+      ...procs.map(p => p.x + PROC_CELL_W * 2),
+      200
+    );
+    const baseX = maxFrameRight + 60;
+    const baseY = 50;
 
     let cursorCol = 0;
     const GAP_X = 2;  // cells of spacing between trees
