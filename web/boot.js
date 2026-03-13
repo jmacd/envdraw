@@ -696,6 +696,10 @@ function wireEvents() {
     if (callbacks.gc) {
       try { callbacks.gc(); } catch (e) { console.error("gc:", e); }
     }
+    // Re-layout after GC removes nodes
+    if (EnvDiagram.getLayout() === "grid") {
+      EnvDiagram.setLayout("grid");
+    }
   });
 
   btnClear.addEventListener("click", () => {
@@ -762,6 +766,8 @@ function wireEvents() {
   selLayout.addEventListener("change", () => {
     EnvDiagram.setLayout(selLayout.value);
   });
+  // Reset dropdown to match actual layout state (browser may restore stale value)
+  selLayout.value = EnvDiagram.getLayout();
 
   // ── Keyboard shortcuts ──
   document.addEventListener("keydown", (e) => {

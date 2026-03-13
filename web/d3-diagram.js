@@ -19,6 +19,7 @@ const EnvDiagram = (() => {
   let bindings = {};  // frameId → [ { varName, value, valueType, procId } ]
   const nodeMap = new Map();  // id → node object (kept in sync with nodes[])
   let lastPairNode = null;   // most recently added pair node (avoids O(n) filter)
+  let lastFrameNode = null;  // most recently added frame node
 
   // ─── D3 handles ─────────────────────────────────────────────────
   let svg, zoomLayer, edgeGroup, nodeGroup, defs;
@@ -195,6 +196,9 @@ const EnvDiagram = (() => {
           if (d.edgeType === "env") return 160;
           if (d.edgeType === "proc-env") return 120;
           if (d.edgeType === "binding") return 130;
+          // Intra-tree car: tight bond between cons cells of the same allocation
+          if (d.edgeType === "car" && d.source.treeId && d.source.treeId === d.target.treeId)
+            return 15;
           if (d.edgeType === "car") return 40;
           if (d.edgeType === "cdr") return 45;
           return 120;
@@ -203,6 +207,9 @@ const EnvDiagram = (() => {
           if (d.edgeType === "env") return 0.2;
           if (d.edgeType === "binding") return 0.15;
           if (d.edgeType === "proc-env") return 0.15;
+          // Intra-tree car: very strong cohesion
+          if (d.edgeType === "car" && d.source.treeId && d.source.treeId === d.target.treeId)
+            return 1.5;
           if (d.edgeType === "car") return 0.8;
           if (d.edgeType === "cdr") return 0.8;
           return 0.2;
@@ -284,6 +291,21 @@ const EnvDiagram = (() => {
     const s = d.source;
     const t = d.target;
     if (!s || !t) return "";
+
+    // Self-loop: tight loop from cdr dot, arcing up, back to top of cdr cell
+    if (s.id === t.id) {
+      const w = s.width || 60;
+      const h = s.height || 30;
+      // cdr dot center in world coords
+      const dotX = s.x - w / 2 + PAIR_CELL_W * 1.5;
+      const dotY = s.y;  // vertical center of cell
+      // End at top edge of cdr cell
+      const endX = dotX;
+      const endY = s.y - h / 2;
+      const r = 22;
+      // Loop right and up, then back down to the top of the same cell
+      return `M${dotX},${dotY} C${dotX + r * 1.8},${dotY - r * 0.5} ${endX + r * 1.8},${endY - r * 0.5} ${endX},${endY}`;
+    }
 
     let sx, sy, tx, ty;
     const sw = s.width || FRAME_MIN_W;
@@ -512,6 +534,16 @@ const EnvDiagram = (() => {
     if (renderTimer !== null) clearTimeout(renderTimer);
     renderTimer = setTimeout(() => {
       renderTimer = null;
+
+      if (layoutMode === "grid") {
+        // Grid mode: no forces. Just update node/edge data and redraw.
+        simulation.stop();
+        simulation.nodes(nodes);
+        simulation.force("link").links(edges);
+        ticked();
+        return;
+      }
+
       simulation.stop();
       // Scale repulsion for large diagrams — pairs always low.
       const n = nodes.length;
@@ -909,20 +941,37 @@ const EnvDiagram = (() => {
 
   // ─── Drag behavior ─────────────────────────────────────────────
   function dragStarted(event, d) {
-    if (!event.active) simulation.alphaTarget(0.3).restart();
-    d.fx = d.x;
-    d.fy = d.y;
+    if (layoutMode === "grid") {
+      // No simulation — just pin and we'll update in dragged()
+      d.fx = d.x;
+      d.fy = d.y;
+    } else {
+      if (!event.active) simulation.alphaTarget(0.3).restart();
+      d.fx = d.x;
+      d.fy = d.y;
+    }
   }
 
   function dragged(event, d) {
     d.fx = event.x;
     d.fy = event.y;
+    d.x = event.x;
+    d.y = event.y;
+    if (layoutMode === "grid") {
+      ticked();  // immediately redraw edges and positions
+    }
   }
 
   function dragEnded(event, d) {
-    if (!event.active) simulation.alphaTarget(0);
-    d.fx = null;
-    d.fy = null;
+    if (layoutMode === "grid") {
+      // Keep the node where the user dropped it (stay pinned)
+      d.x = d.fx;
+      d.y = d.fy;
+    } else {
+      if (!event.active) simulation.alphaTarget(0);
+      d.fx = null;
+      d.fy = null;
+    }
   }
 
   // ─── Public API (called from Scheme via FFI) ────────────────────
@@ -955,6 +1004,7 @@ const EnvDiagram = (() => {
     }
 
     bindings[id] = [];
+    lastFrameNode = node;
     pushNode(node);
 
     // Add env edge to parent
@@ -1090,12 +1140,12 @@ const EnvDiagram = (() => {
       height: PAIR_CELL_H,
     };
 
-    // Position near the most recent pair (they're being built as a tree)
-    // or fall back to center.  addPairEdge will refine positions.
-    const anchor = lastPairNode;
+    // Position near the most recent frame (the creating context),
+    // with small random jitter.  Link forces will fine-tune positions.
+    const anchor = lastFrameNode;
     if (anchor) {
       node.x = (anchor.x || width / 2) + (Math.random() - 0.5) * 60;
-      node.y = (anchor.y || height / 2) + (Math.random() - 0.5) * 40;
+      node.y = (anchor.y || height / 2) + 80 + (Math.random() - 0.5) * 40;
     } else {
       node.x = width / 2 + (Math.random() - 0.5) * 60;
       node.y = height / 2 + (Math.random() - 0.5) * 40;
@@ -1111,18 +1161,21 @@ const EnvDiagram = (() => {
     // type is "car" or "cdr"
     pushEdge(fromId, toId, type);
 
-    // Position child near parent for good list/tree initial layout
+    // Propagate treeId to child nodes that don't have one
     const parent = nodeById(fromId);
     const child = nodeById(toId);
     if (parent && child) {
+      if (parent.treeId && !child.treeId) {
+        child.treeId = parent.treeId;
+      }
+
+      // Position child near parent for good list/tree initial layout
       const px = parent.x || width / 2;
       const py = parent.y || height / 2;
       if (type === "cdr") {
-        // cdr goes to the right (list layout)
         child.x = px + 45;
         child.y = py;
       } else {
-        // car goes below (tree layout)
         child.x = px;
         child.y = py + 40;
       }
@@ -1256,6 +1309,7 @@ const EnvDiagram = (() => {
     bindings = {};
     nodeMap.clear();
     lastPairNode = null;
+    lastFrameNode = null;
     colorIndex = 0;
     if (autoFitTimer !== null) { clearTimeout(autoFitTimer); autoFitTimer = null; }
     if (renderTimer !== null) { clearTimeout(renderTimer); renderTimer = null; }
@@ -1281,7 +1335,31 @@ const EnvDiagram = (() => {
     counts._total = nodes.length;
     counts._edges = edges.length;
     counts._pairTrees = treeIds.size;
+    // Include self-loop count
+    counts._selfLoops = edges.filter(e => e.source.id === e.target.id).length;
     return counts;
+  }
+
+  function edgeList() {
+    return edges.map(e => ({
+      id: e.id,
+      source: e.source.id,
+      target: e.target.id,
+      type: e.edgeType,
+      selfLoop: e.source.id === e.target.id,
+    }));
+  }
+
+  function nodeList() {
+    return nodes.map(n => ({
+      id: n.id,
+      type: n.type,
+      treeId: n.treeId || null,
+      x: Math.round(n.x || 0),
+      y: Math.round(n.y || 0),
+      fx: n.fx != null ? Math.round(n.fx) : null,
+      fy: n.fy != null ? Math.round(n.fy) : null,
+    }));
   }
 
   // ─── Layout modes ──────────────────────────────────────────────
@@ -1308,63 +1386,133 @@ const EnvDiagram = (() => {
   /**
    * Walk each pair tree and assign grid positions.
    * cdr → right, car → down.  Pin with fx/fy.
+   * Also pin frames and procedures so dragging pairs doesn't disturb them.
    */
   function applyGridLayout() {
+    // Pin all frames and procedures at their current positions.
+    // If they don't have positions yet, place frames in a column to the left
+    // and procedures just below their parent frame.
+    const frameX = 100;
+    let frameY = 50;
+    const frameSpacing = 120;
+    for (const n of nodes) {
+      if (n.type === "frame") {
+        if (!n.x || !n.y) {
+          n.x = frameX;
+          n.y = frameY;
+          frameY += frameSpacing;
+        }
+        n.fx = n.x;
+        n.fy = n.y;
+      }
+    }
+    for (const n of nodes) {
+      if (n.type === "procedure") {
+        if (!n.x || !n.y) {
+          // Place near parent frame via env edge
+          const envEdge = edges.find(e => e.source.id === n.id && e.edgeType === "env");
+          if (envEdge) {
+            n.x = (envEdge.target.x || frameX) + 200;
+            n.y = (envEdge.target.y || 50);
+          } else {
+            n.x = frameX + 200;
+            n.y = 50;
+          }
+        }
+        n.fx = n.x;
+        n.fy = n.y;
+      }
+    }
+
     // Find tree roots: pair nodes whose treeId === their own id
     const roots = nodes.filter(n => n.type === "pair" && n.treeId === n.id);
+    if (roots.length === 0) return;
 
+    // Build outgoing-edge index for O(1) lookup
+    const outEdges = new Map();
+    for (const e of edges) {
+      if (e.edgeType !== "car" && e.edgeType !== "cdr") continue;
+      const src = e.source.id;
+      if (!outEdges.has(src)) outEdges.set(src, []);
+      outEdges.get(src).push(e);
+    }
+
+    // Global visited set — shared nodes positioned by first tree only
+    const visited = new Set();
+
+    const cellW = PAIR_CELL_W * 2 + 12;
+    const cellH = PAIR_CELL_H + 12;
+
+    // First pass: measure each tree's extent (cols × rows)
+    function measureTree(nodeId, col, row, measured) {
+      if (measured.has(nodeId)) return;
+      measured.add(nodeId);
+      const children = outEdges.get(nodeId);
+      if (!children) return;
+      for (const e of children) {
+        const nc = e.edgeType === "cdr" ? col + 1 : col;
+        const nr = e.edgeType === "car" ? row + 1 : row;
+        if (nc > measured.maxCol) measured.maxCol = nc;
+        if (nr > measured.maxRow) measured.maxRow = nr;
+        measureTree(e.target.id, nc, nr, measured);
+      }
+    }
+
+    const treeSizes = [];
     for (const root of roots) {
-      // Find the binding edge pointing to this root to anchor near its frame
-      const bindingEdge = edges.find(
-        e => e.target.id === root.id && e.edgeType === "binding"
-      );
-      const anchorX = bindingEdge
-        ? (bindingEdge.source.x || width / 2) + 160
-        : (root.x || width / 2);
-      const anchorY = bindingEdge
-        ? (bindingEdge.source.y || height / 4)
-        : (root.y || height / 4);
+      const measured = new Set();
+      measured.maxCol = 0;
+      measured.maxRow = 0;
+      measureTree(root.id, 0, 0, measured);
+      treeSizes.push({ root, cols: measured.maxCol + 1, rows: measured.maxRow + 1 });
+    }
 
-      // BFS/DFS to assign grid positions within this tree
-      const visited = new Set();
-      const cellW = PAIR_CELL_W * 2 + 12;  // pair width + gap
-      const cellH = PAIR_CELL_H + 12;      // pair height + gap
+    // Lay out all trees flowing left-to-right from a single origin
+    // Use global frame's position as the baseline
+    const globalFrame = nodes.find(n => n.type === "frame" && n.name === "global");
+    const baseX = globalFrame
+      ? Math.round((globalFrame.x || width / 2) / cellW) * cellW + 160
+      : width / 2;
+    const baseY = globalFrame
+      ? Math.round((globalFrame.y || height / 4) / cellH) * cellH
+      : height / 4;
+
+    let cursorCol = 0;
+    const GAP_X = 2;  // cells of spacing between trees
+
+    for (const ts of treeSizes) {
+      const anchorX = baseX + cursorCol * cellW;
+      const anchorY = baseY;
 
       function layoutNode(nodeId, col, row) {
         if (visited.has(nodeId)) return;
         visited.add(nodeId);
-
         const node = nodeById(nodeId);
         if (!node) return;
-
-        // Pin at grid position
         node.fx = anchorX + col * cellW;
         node.fy = anchorY + row * cellH;
         node.x = node.fx;
         node.y = node.fy;
-
-        // Find car and cdr children via edges
-        for (const e of edges) {
-          if (e.source.id !== nodeId) continue;
-          if (e.edgeType === "cdr") {
-            layoutNode(e.target.id, col + 1, row);
-          } else if (e.edgeType === "car") {
-            layoutNode(e.target.id, col, row + 1);
-          }
+        const children = outEdges.get(nodeId);
+        if (!children) return;
+        for (const e of children) {
+          if (e.edgeType === "cdr") layoutNode(e.target.id, col + 1, row);
+          else if (e.edgeType === "car") layoutNode(e.target.id, col, row + 1);
         }
       }
 
-      layoutNode(root.id, 0, 0);
+      layoutNode(ts.root.id, 0, 0);
+
+      // Advance cursor past this tree
+      cursorCol += ts.cols + GAP_X;
     }
   }
 
-  /** Remove fx/fy pins from all pair nodes (return to force layout). */
+  /** Remove all fx/fy pins (return to force layout). */
   function clearPairPins() {
     for (const n of nodes) {
-      if (n.type === "pair" || n.type === "pair-atom" || n.type === "pair-null") {
-        delete n.fx;
-        delete n.fy;
-      }
+      delete n.fx;
+      delete n.fy;
     }
   }
 
@@ -1387,6 +1535,8 @@ const EnvDiagram = (() => {
     zoomBy,
     clear,
     stats,
+    edgeList,
+    nodeList,
     setLayout,
     getLayout,
   };
