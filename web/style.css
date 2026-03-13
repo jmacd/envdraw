@@ -462,11 +462,8 @@ header#toolbar {
 }
 
 .empty-icon {
-  font-size: 64px;
-  font-weight: 200;
   color: var(--border);
   margin-bottom: 12px;
-  font-family: serif;
 }
 
 .empty-title {
@@ -637,6 +634,11 @@ header#toolbar {
 #repl-area.collapsed {
   height: 28px;
   min-height: 28px;
+  border-top: 1px solid #555;
+}
+#repl-area.collapsed #repl-handle {
+  color: var(--repl-fg);
+  background: rgba(255,255,255,0.06);
 }
 
 #repl-handle {
